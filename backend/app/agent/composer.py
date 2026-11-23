@@ -2301,7 +2301,9 @@ def _prepare_draft(text: str, skeleton: str) -> str:
     cleaned = _append_skeleton_closers(_strip_model_closers(cleaned), skeleton)
     cleaned = _drop_legend_from_reason(cleaned, skeleton)
     cleaned = _own_investment_sentence(cleaned, skeleton)
-    return _prefer_digits(cleaned, skeleton)
+    cleaned = _repair_ranking_opening(cleaned, skeleton)
+    cleaned = _prefer_digits(cleaned, skeleton)
+    return _restore_reason_facts(cleaned, skeleton)
 
 
 _NUMBER_ONES = {
@@ -2441,7 +2443,7 @@ def _spell_numbers(text: str, allow=None) -> str:
         spoken,
         flags=re.I,
     )
-    unit = rf"(?:{tens}(?:[-\s]{ones})?|{ones}|\d+(?:\.\d+)?)"
+    unit = rf"(?:(?:{tens})(?:[-\s](?:{ones}))?|(?:{ones})|\d+(?:\.\d+)?)"
 
     def hundred(match: re.Match[str]) -> str:
         head = match.group(1).lower()
@@ -2547,24 +2549,93 @@ def _says_trails(text: str, trailer: str, leader: str) -> bool:
     return False
 
 
+_PROMOTED_HUB = re.compile(
+    r"\b(is more exposed|is the most exposed|edges out|leads|is ahead|is riskier)\b",
+    re.I,
+)
+
+
+def _repair_ranking_opening(text: str, skeleton: str) -> str:
+    """Keep the skeleton's sentence 1 when a draft adds or drops a scored hub there."""
+    if not _is_plural_ranking(skeleton):
+        return text
+    wanted = _opening_sentence(skeleton)
+    tail_match = re.search(r"(?is)\bScores\s*:.*", text)
+    body = text[: tail_match.start()].strip() if tail_match else text.strip()
+    tail = tail_match.group(0).strip() if tail_match else ""
+    opening = _opening_sentence(body)
+    needed = set(_mentioned_hubs(_scores_clause(skeleton) or ""))
+    named = set(_mentioned_hubs(opening))
+    if needed <= named and not (named - set(_mentioned_hubs(wanted))) and not _REGION_LABEL.search(opening):
+        return text
+    rest = body[len(opening) :].strip() if body.startswith(opening) else ""
+    repaired = f"{wanted} {rest}".strip()
+    if tail:
+        repaired = f"{repaired} {tail}"
+    return repaired
+
+
+def _restore_reason_facts(text: str, skeleton: str) -> str:
+    """A draft that drops a day count keeps the skeleton reason, once, with those digits."""
+    missing = _unmatched_numbers(_fact_numbers(_before_scores(skeleton)), _fact_numbers(_before_scores(text)))
+    if not missing:
+        return text
+    reason = _before_scores(skeleton).strip()
+    if not reason:
+        return text
+    tail_match = re.search(r"(?is)\bScores\s*:.*", text)
+    tail = tail_match.group(0).strip() if tail_match else ""
+    return f"{reason} {tail}".strip() if tail else reason
+
+
+def _extra_hub_problem(spoken: str, base: str) -> str | None:
+    """Sentence 1 cannot add a hub. A later sentence may name one only as trailing."""
+    base_hubs = set(_mentioned_hubs(base))
+    for name in sorted(set(_mentioned_hubs(_opening_sentence(spoken))) - base_hubs):
+        return f"extra hub {name}"
+    score_extra = set(_mentioned_hubs(_scores_clause(spoken) or "")) - set(_mentioned_hubs(_scores_clause(base) or ""))
+    if score_extra:
+        return f"extra hub {sorted(score_extra)[0]}"
+    body = _before_scores(spoken).strip()
+    opening = _opening_sentence(body)
+    rest = body[len(opening) :].strip() if body.startswith(opening) else ""
+    for sentence in re.split(r"(?<=[.!?])\s+", rest):
+        extras = set(_mentioned_hubs(sentence)) - base_hubs
+        if not extras or not _PROMOTED_HUB.search(sentence):
+            continue
+        for name in sorted(extras):
+            for form in _name_forms(name):
+                if re.search(
+                    rf"\b{re.escape(form)}\b.{{0,80}}{ _PROMOTED_HUB.pattern}",
+                    sentence,
+                    re.I,
+                ):
+                    return f"extra hub {name}"
+    return None
+
+
 def _fact_problem(text: str, skeleton: str) -> str | None:
-    """Same hubs and the same counts, percents, scores, and contribution points. Wording may change."""
+    """Same hubs and the same counts. Scores stay on the Scores line, not in the reason."""
     spoken = text.split("Contributors, largest first", 1)[0]
     base = skeleton.split("Contributors, largest first", 1)[0]
-    needed = _fact_numbers(base)
-    got = _fact_numbers(spoken)
-    missing = _unmatched_numbers(needed, got)
+    reason_needed = _fact_numbers(_before_scores(base))
+    reason_got = _fact_numbers(_before_scores(spoken))
+    score_needed = _fact_numbers(_scores_clause(base) or "")
+    score_got = _fact_numbers(_scores_clause(spoken) or "")
+    missing = _unmatched_numbers(reason_needed, reason_got) or _unmatched_numbers(score_needed, score_got)
     if missing:
         return f"missing fact {missing[0]:g}"
-    extra = [value for value in got if not any(abs(value - item) <= 0.1 + 1e-9 for item in needed)]
+    allowed = [*reason_needed, *score_needed]
+    extra = [value for value in [*reason_got, *score_got] if not any(abs(value - item) <= 0.1 + 1e-9 for item in allowed)]
     if extra:
         return f"extra fact {extra[0]:g}"
     base_hubs = set(_mentioned_hubs(base))
     draft_hubs = set(_mentioned_hubs(spoken))
     if base_hubs - draft_hubs:
         return f"missing hub {sorted(base_hubs - draft_hubs)[0]}"
-    if draft_hubs - base_hubs:
-        return f"extra hub {sorted(draft_hubs - base_hubs)[0]}"
+    extra_hub = _extra_hub_problem(spoken, base)
+    if extra_hub:
+        return extra_hub
     leaders = {leader for trailer, leader in ((left, right) for left in base_hubs for right in base_hubs if _says_trails(base, left, right))}
     for trailer in draft_hubs:
         for leader in draft_hubs:

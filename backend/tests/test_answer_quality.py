@@ -40,6 +40,7 @@ def test_prompt_keeps_short_answers():
     assert "every hub on the Scores line" in ANSWER_SYSTEM
     assert "not fourteen" in ANSWER_SYSTEM
     assert "not ninety-nine" in ANSWER_SYSTEM
+    assert "137 vs 120" in ANSWER_SYSTEM
     assert "not a probability" in ANSWER_SYSTEM
     assert ">= 1 cm" in ANSWER_SYSTEM
     assert "is riskier" in ANSWER_SYSTEM
@@ -386,9 +387,10 @@ def test_plural_ranking_draft_names_every_hub_in_plain_words():
     )
     assert not _draft_is_usable(labeled, {}, [], skeleton)
     shown = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=labeled), None, {})
-    assert shown.fallback is True
+    assert shown.fallback is False
     assert shown.answer.startswith("Minneapolis, Detroit, and Chicago")
     assert "hub (" not in shown.answer
+    assert shown.answer.lower().count("scores:") == 1
     overall = (
         "New York/Newark, Houston, and Dallas are the most exposed to weather disruption, with New York/Newark slightly ahead. "
         "FEMA rates New York/Newark a high historical hurricane-risk area. "
@@ -401,6 +403,54 @@ def test_plural_ranking_draft_names_every_hub_in_plain_words():
     )
     assert not _draft_is_usable(dropped, {}, [], overall)
     assert _draft_is_usable(overall, {}, [], overall)
+    ranked = (
+        "New York/Newark, Houston, and Dallas are the most exposed to weather disruption, with New York/Newark slightly ahead. "
+        "FEMA rates New York/Newark a high historical hurricane-risk area. "
+        "Scores: New York/Newark 46.8, Houston 44.2, Dallas 43.0 (higher = more exposed)."
+    )
+    trailing = ranked.replace(
+        "FEMA rates",
+        "Atlanta trails the rest of the set. FEMA rates",
+    )
+    assert _draft_is_usable(trailing, {}, [], ranked)
+    promoted = ranked.replace(
+        "FEMA rates",
+        "Atlanta is more exposed than New York/Newark. FEMA rates",
+    )
+    assert not _draft_is_usable(promoted, {}, [], ranked)
+    named_in_opening = ranked.replace(
+        "New York/Newark, Houston, and Dallas",
+        "New York/Newark, Houston, Dallas, and Atlanta",
+    )
+    assert not _draft_is_usable(named_in_opening, {}, [], ranked)
+    gap = (
+        "Minneapolis edges out Detroit mainly because it had more freezing days (137 vs 120) and a higher snow-day rate; "
+        "both are rated high winter-risk by FEMA. "
+        "Scores: Minneapolis 45.1, Detroit 42.3."
+    )
+    restated = (
+        "Minneapolis edges out Detroit mainly because it had more freezing days (137 vs 120). "
+        "Both are rated high winter-risk by FEMA. "
+        "Scores: Minneapolis 45.1, Detroit 42.3."
+    )
+    assert _draft_is_usable(restated, {}, [], gap)
+    spelled_gap = restated.replace("137", "one hundred thirty-seven").replace("120", "one hundred twenty")
+    assert _draft_is_usable(spelled_gap, {}, [], gap)
+    kept_gap = apply_model_prose(AnswerResult(answer=gap), AnswerDraft(answer=spelled_gap), None, {})
+    assert kept_gap.fallback is False
+    assert "137 vs 120" in kept_gap.answer
+    assert "one hundred" not in kept_gap.answer
+    assert not _draft_is_usable(restated.replace("(137 vs 120)", ""), {}, [], gap)
+    restored = apply_model_prose(
+        AnswerResult(answer=gap),
+        AnswerDraft(answer=restated.replace("(137 vs 120)", "")),
+        None,
+        {},
+    )
+    assert restored.fallback is False
+    assert "137 vs 120" in restored.answer
+    assert restored.answer.lower().count("edges out") == 1
+    assert restored.answer.lower().count("scores:") == 1
 
 
 def test_single_hub_follow_up_stays_relative_to_the_set(client):
