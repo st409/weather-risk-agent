@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ChatResponse, Driver, Evidence, sendMessage } from "./api";
+import { recognitionCtor, recognitionSupported, speakableAnswer, speakText, stopSpeaking } from "./voice";
 
 const EXAMPLES = [
   {
@@ -67,6 +68,7 @@ const DRIVER_LABEL: Record<string, string> = {
 
 const THREADS_KEY = "wra-threads-v1";
 const ACTIVE_KEY = "wra-active-v1";
+const EMPTY_TURNS: Turn[] = [];
 
 type Turn = { role: "user" | "assistant"; text: string; payload?: ChatResponse; live?: boolean };
 
@@ -85,12 +87,20 @@ export function App() {
   const [pending, setPending] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [listening, setListening] = useState(false);
+  const [readAloud, setReadAloud] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const threadsRef = useRef(threads);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const sendOnEndRef = useRef(true);
+  const spokenKeyRef = useRef<string | null>(null);
+  const askRef = useRef<(text: string) => void>(() => {});
   threadsRef.current = threads;
+  const voiceSupported = useMemo(() => recognitionSupported(), []);
 
   const active = threads.find((thread) => thread.id === activeId) ?? null;
-  const turns = active?.turns ?? [];
+  const turns = active?.turns ?? EMPTY_TURNS;
   const chatting = turns.length > 0 || pending;
 
   useEffect(() => {
@@ -111,8 +121,11 @@ export function App() {
   async function ask(text: string) {
     const message = text.trim();
     if (!message || pending) return;
+    stopListening(false);
+    stopSpeaking();
     setDraft("");
     setError(null);
+    setVoiceError(null);
     setPending(true);
     const threadId = activeId ?? crypto.randomUUID();
     const prior = threadsRef.current.find((thread) => thread.id === threadId);
@@ -154,9 +167,117 @@ export function App() {
     }
   }
 
+  askRef.current = ask;
+
+  useEffect(() => {
+    if (!readAloud) {
+      stopSpeaking();
+      return;
+    }
+    if (!active) return;
+    let index = -1;
+    for (let i = active.turns.length - 1; i >= 0; i -= 1) {
+      if (active.turns[i].role === "assistant") {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) return;
+    const turn = active.turns[index];
+    if (!turn.live || !turn.text) return;
+    const key = `${active.id}:${index}:${turn.text}`;
+    if (spokenKeyRef.current === key) return;
+    spokenKeyRef.current = key;
+    speakText(speakableAnswer(turn.text));
+  }, [readAloud, active, turns]);
+
+  useEffect(() => {
+    return () => {
+      sendOnEndRef.current = false;
+      recognitionRef.current?.abort();
+      stopSpeaking();
+    };
+  }, []);
+
+  function stopListening(sendTranscript: boolean) {
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+    sendOnEndRef.current = sendTranscript;
+    try {
+      recognition.stop();
+    } catch {
+      recognitionRef.current = null;
+      setListening(false);
+    }
+  }
+
+  function toggleMic() {
+    if (pending) return;
+    if (listening) {
+      stopListening(true);
+      return;
+    }
+    const Ctor = recognitionCtor();
+    if (!Ctor) return;
+    setVoiceError(null);
+    stopSpeaking();
+    const recognition = new Ctor();
+    recognition.lang = "en-US";
+    recognition.interimResults = true;
+    recognition.continuous = false;
+    let latest = "";
+    recognition.onresult = (event) => {
+      let finals = "";
+      let interim = "";
+      for (let i = 0; i < event.results.length; i += 1) {
+        const piece = event.results[i][0]?.transcript ?? "";
+        if (event.results[i].isFinal) finals += piece;
+        else interim += piece;
+      }
+      latest = `${finals}${interim}`.replace(/\s+/g, " ").trim();
+      setDraft(latest);
+    };
+    recognition.onerror = (event) => {
+      if (event.error === "aborted" || event.error === "no-speech") return;
+      sendOnEndRef.current = false;
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        setVoiceError("Microphone permission was denied.");
+      } else if (event.error === "audio-capture") {
+        setVoiceError("No microphone was found.");
+      } else {
+        setVoiceError("Voice input failed. Try again.");
+      }
+    };
+    recognition.onend = () => {
+      setListening(false);
+      recognitionRef.current = null;
+      const transcript = latest;
+      const shouldSend = sendOnEndRef.current;
+      sendOnEndRef.current = true;
+      if (shouldSend && transcript) askRef.current(transcript);
+    };
+    sendOnEndRef.current = true;
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+      setListening(true);
+    } catch {
+      recognitionRef.current = null;
+      setListening(false);
+      setVoiceError("Voice input failed. Try again.");
+    }
+  }
+
   function onSubmit(event: FormEvent) {
     event.preventDefault();
     void ask(draft);
+  }
+
+  function toggleReadAloud() {
+    setReadAloud((on) => {
+      if (on) stopSpeaking();
+      return !on;
+    });
   }
 
   function newChat() {
@@ -227,6 +348,17 @@ export function App() {
             )}
             Weather Risk
           </div>
+          <button
+            className={readAloud ? "speak-toggle on" : "speak-toggle"}
+            type="button"
+            aria-pressed={readAloud}
+            aria-label={readAloud ? "Turn off read aloud" : "Read answers aloud"}
+            title={readAloud ? "Read aloud on" : "Read answers aloud"}
+            onClick={toggleReadAloud}
+          >
+            <SpeakerIcon on={readAloud} />
+            Read aloud
+          </button>
         </header>
 
         <div className={chatting ? "stage live" : "stage"}>
@@ -237,7 +369,17 @@ export function App() {
                 <p className="subtitle">Ask about winter, floods, hurricanes, or a single hub.</p>
               </div>
               {error && <div className="error">{error}</div>}
-              <Composer draft={draft} pending={pending} onDraft={setDraft} onSubmit={onSubmit} onAsk={ask} />
+              <Composer
+                draft={draft}
+                pending={pending}
+                listening={listening}
+                voiceSupported={voiceSupported}
+                voiceError={voiceError}
+                onDraft={setDraft}
+                onSubmit={onSubmit}
+                onAsk={ask}
+                onToggleMic={toggleMic}
+              />
               <div className="topics">
                 {EXAMPLES.map((example) => (
                   <button key={example.title} type="button" className="topic" disabled={pending} onClick={() => void ask(example.prompt)}>
@@ -268,7 +410,17 @@ export function App() {
                 <div ref={endRef} />
               </div>
               {error && <div className="error">{error}</div>}
-              <Composer draft={draft} pending={pending} onDraft={setDraft} onSubmit={onSubmit} onAsk={ask} />
+              <Composer
+                draft={draft}
+                pending={pending}
+                listening={listening}
+                voiceSupported={voiceSupported}
+                voiceError={voiceError}
+                onDraft={setDraft}
+                onSubmit={onSubmit}
+                onAsk={ask}
+                onToggleMic={toggleMic}
+              />
             </>
           )}
         </div>
@@ -280,15 +432,23 @@ export function App() {
 function Composer({
   draft,
   pending,
+  listening,
+  voiceSupported,
+  voiceError,
   onDraft,
   onSubmit,
   onAsk,
+  onToggleMic,
 }: {
   draft: string;
   pending: boolean;
+  listening: boolean;
+  voiceSupported: boolean;
+  voiceError: string | null;
   onDraft: (value: string) => void;
   onSubmit: (event: FormEvent) => void;
   onAsk: (text: string) => void;
+  onToggleMic: () => void;
 }) {
   const fieldRef = useRef<HTMLTextAreaElement>(null);
 
@@ -299,26 +459,59 @@ function Composer({
     field.style.height = `${Math.min(field.scrollHeight, 144)}px`;
   }, [draft]);
 
+  const micLabel = !voiceSupported
+    ? "Voice input isn't supported in this browser"
+    : listening
+      ? "Stop voice input"
+      : "Start voice input";
+
   return (
-    <form className="composer" onSubmit={onSubmit}>
-      <textarea
-        ref={fieldRef}
-        aria-label="Message"
-        rows={1}
-        value={draft}
-        placeholder="Ask about a hub, a region, or a hazard…"
-        onChange={(event) => onDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault();
-            onAsk(draft);
-          }
-        }}
-      />
-      <button className="send" type="submit" aria-label="Send" disabled={pending || !draft.trim()}>
-        <ArrowIcon />
-      </button>
-    </form>
+    <div className="composer-wrap">
+      <form className="composer" onSubmit={onSubmit}>
+        <textarea
+          ref={fieldRef}
+          aria-label="Message"
+          rows={1}
+          value={draft}
+          placeholder="Ask about a hub, a region, or a hazard…"
+          onChange={(event) => onDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              onAsk(draft);
+            }
+          }}
+        />
+        <div className="composer-tools">
+          {listening && (
+            <span className="listening-note" role="status">
+              Listening...
+            </span>
+          )}
+          <span className="mic-slot" title={voiceSupported ? undefined : "Voice input isn't supported in this browser"}>
+            <button
+              className={listening ? "mic listening" : "mic"}
+              type="button"
+              aria-label={micLabel}
+              aria-pressed={listening}
+              title={micLabel}
+              disabled={!voiceSupported || pending}
+              onClick={onToggleMic}
+            >
+              <MicIcon />
+            </button>
+          </span>
+          <button className="send" type="submit" aria-label="Send" disabled={pending || !draft.trim()}>
+            <ArrowIcon />
+          </button>
+        </div>
+      </form>
+      {voiceError && (
+        <p className="voice-error" role="alert">
+          {voiceError}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -526,6 +719,29 @@ function ComposeIcon() {
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
       <path d="M5 19h4l9.5-9.5a2.1 2.1 0 0 0-3-3L6 16v3z" />
       <path d="M13.5 7.5l3 3" />
+    </svg>
+  );
+}
+
+function MicIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M6 11a6 6 0 0 0 12 0" />
+      <path d="M12 17v3" />
+    </svg>
+  );
+}
+
+function SpeakerIcon({ on }: { on: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M4 10h3l4-3v10l-4-3H4z" />
+      {on ? (
+        <path d="M16 9a4 4 0 0 1 0 6" />
+      ) : (
+        <path d="M16 10l4 4M20 10l-4 4" />
+      )}
     </svg>
   );
 }

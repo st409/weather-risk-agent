@@ -6,6 +6,10 @@ The service is live at https://weather-risk-agent-dsev.onrender.com/ on Render's
 
 About 4,900 lines of application code, plus about 2,100 lines of tests and evals, and about 1,000 lines of frontend. Counts skip blank lines.
 
+## Features
+
+Voice: mic input and optional read-aloud via the browser Web Speech API (Chrome/Edge/Safari).
+
 ## Run
 
 ```bash
