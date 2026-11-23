@@ -13,12 +13,12 @@ A weather-risk chat agent for 10 fixed US logistics hubs.
 - Deployed on Render: chat UI https://weather-risk-agent-dsev.onrender.com/ and API https://weather-risk-api.onrender.com. See [README.md](README.md) for the free-plan cold start.
 - Bonus: optional voice input and read-aloud in the chat, using the browser Web Speech API.
 
-Design details and formulas are in [DESIGN.md](DESIGN.md).
+Architecture, the repository layout, and the SQLite choice are in [DESIGN.md](DESIGN.md). The scoring formulas are in `backend/app/risk/scoring.py`.
 
 ## Decisions
 
 - Open-Meteo archive for daily history because it needs no token. NOAA CDO was not used.
-- NWS active alerts for the current alert term. Severity weights are documented in `DESIGN.md` because the brief required a weighted count but did not define the weights.
+- NWS active alerts for the current alert term. Severity weights, which the brief required but did not define, are Extreme 3, Severe 2, Moderate 1, Minor 0.5, Unknown 0.25.
 - FEMA county hazard-type risk index scores were queried from the public counties feature service on 2026-11-23 and saved as a CSV. They were not invented. Large-county scores sit near 100, and the answers say so.
 - Null FEMA hurricane or coastal-flood cells are treated as 0 and called out when that hazard is in view.
 - Surge modifier is limited to Miami, Houston, and New York/Newark.
