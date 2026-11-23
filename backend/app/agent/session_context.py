@@ -207,7 +207,6 @@ def parse_message(message: str) -> ParsedMessage:
         and not breakdown_ask
         and not metric_q
         and not compare
-        and not rank
         and not why
     )
 
@@ -224,6 +223,8 @@ def parse_message(message: str) -> ParsedMessage:
         intent = "methodology"
     elif alerts and not hub_ids and not rank:
         intent = "alerts"
+    elif why and re.search(r"\bwhich\b", low) and not hub_ids:
+        intent = "rank_hubs"
     elif why:
         intent = "explain_hub"
     elif metric_q:
@@ -271,6 +272,11 @@ def resolve_intent(parsed: ParsedMessage, context: SessionContext | None) -> Res
     context = context or SessionContext()
     if parsed.intent in {"unsupported_language", "greeting", "off_topic", "methodology", "alerts"}:
         return _ok(parsed)
+    if re.search(r"\bsimilar(?:ity)?\b", parsed.text, re.I):
+        return _clarify(
+            "Similarity isn't a supported comparison. Name two hubs and I can compare them.",
+            parsed,
+        )
     if parsed.unknown_place:
         return _clarify(
             f"I don't cover {parsed.unknown_place}. This demo only scores {hub_names()}.",
@@ -289,6 +295,7 @@ def resolve_intent(parsed: ParsedMessage, context: SessionContext | None) -> Res
     parsed = _maybe_inherit(parsed, context)
     parsed = _fill_compare_partner(parsed, context)
     parsed = _fill_why_lower(parsed, context)
+    parsed = _keep_metric_follow_up(parsed, context)
     if parsed.intent in {"unknown", "follow_up"}:
         return _clarify(
             "I can rank these hubs, compare two of them, look up a weather percentage, or explain a score. What should I look up?",
@@ -685,7 +692,9 @@ def _is_metric_question(low: str) -> bool:
     """Day counts stay on the metric, including 'most freeze days' and 'more snow days'."""
     if re.search(r"\b(percent|percentage|how many(?:\s+\w+){0,3}\s+days|share of days)\b|%", low):
         return True
-    if re.search(r"\b(?:snow|snowfall|freeze|freezing)\s+days\b", low):
+    if re.search(r"\b(?:snow|snowfall|freeze|freezing|extreme heat|heat|heavy[-\s]?rain)\s+days\b", low):
+        return True
+    if re.search(r"\b95\s*f\b", low) and re.search(r"\bdays\b", low):
         return True
     return False
 
@@ -729,14 +738,41 @@ def _fill_why_lower(parsed: ParsedMessage, context: SessionContext) -> ParsedMes
     return parsed
 
 
+def _keep_metric_follow_up(parsed: ParsedMessage, context: SessionContext) -> ParsedMessage:
+    """'and Denver?' after a day count stays on that count."""
+    if context.last_intent != "metric_lookup" or context.metric not in METRICS:
+        return parsed
+    if parsed.detail == "breakdown" or not _hub_only_follow_up(parsed):
+        return parsed
+    parsed.intent = "metric_lookup"
+    parsed.metric = context.metric
+    parsed.hazards = []
+    parsed.hazards_explicit = False
+    parsed.inherited = True
+    if parsed.time_window is None:
+        parsed.time_window = context.time_window
+    return parsed
+
+
+def _hub_only_follow_up(parsed: ParsedMessage) -> bool:
+    if len(parsed.hub_ids) != 1:
+        return False
+    stripped = re.sub(r"[^a-z\s]", " ", parsed.text.lower())
+    for alias, hub_id in ALIASES:
+        if hub_id == parsed.hub_ids[0]:
+            stripped = re.sub(rf"\b{re.escape(alias)}\b", " ", stripped)
+    glue = {"and", "also", "too", "what", "about", "how", "now", "please", "the", "for", "a"}
+    return not [word for word in stripped.split() if word not in glue]
+
+
 def _metric(low: str) -> str | None:
     if re.search(r"\b(snowfall|snow)\b", low):
         return "snowfall_day_pct"
     if re.search(r"\bfreez", low):
         return "freeze_day_pct"
-    if re.search(r"\b(100|extreme heat)\b", low):
+    if re.search(r"\b(?:100|extreme heat)\b", low):
         return "extreme_heat_day_pct"
-    if re.search(r"\b(95|heat)\b", low):
+    if re.search(r"\b95\s*f\b|\b(?:95|heat)\b", low):
         return "heat_day_pct"
     if re.search(r"\b(very heavy|2 inches|two inches)\b", low):
         return "very_heavy_rain_day_pct"

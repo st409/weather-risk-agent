@@ -308,6 +308,50 @@ def test_harden_and_freshness_are_answered():
     assert fresh.needs_clarification is False
 
 
+def test_which_and_why_still_ranks():
+    resolved = _resolve("If we could only harden one hub this winter, which one should we choose and why?")
+    assert resolved.intent == "rank_hubs"
+    assert resolved.hazards == ["winter"]
+    assert resolved.hub_ids == []
+    assert resolved.needs_clarification is False
+
+
+def test_and_denver_keeps_the_freeze_metric():
+    context = SessionContext(
+        hub_ids=["detroit"],
+        focus_hub_id="detroit",
+        metric="freeze_day_pct",
+        hazards=["winter"],
+        last_intent="metric_lookup",
+        last_result_hub_ids=["detroit"],
+    )
+    resolved = _resolve("and Denver?", context)
+    assert resolved.intent == "metric_lookup"
+    assert resolved.metric == "freeze_day_pct"
+    assert resolved.hub_ids == ["denver"]
+    assert resolved.hazards == []
+
+
+def test_assumptions_about_ranking_stay_methodology():
+    resolved = _resolve("What assumptions most affect the ranking?")
+    assert resolved.intent == "methodology"
+    assert resolved.needs_clarification is False
+
+
+def test_extreme_heat_days_are_a_metric():
+    resolved = _resolve("Which hub has the most extreme heat days?")
+    assert resolved.intent == "metric_lookup"
+    assert resolved.metric == "extreme_heat_day_pct"
+    assert resolved.needs_clarification is False
+
+
+def test_similarity_is_not_a_ranking():
+    resolved = _resolve("Which two hubs are most similar?")
+    assert resolved.needs_clarification is True
+    assert resolved.intent == "unknown"
+    assert "isn't a supported comparison" in (resolved.clarifying_question or "")
+
+
 def test_breakdown_after_a_metric_explains_the_hazard():
     context = SessionContext(
         hub_ids=["denver"],

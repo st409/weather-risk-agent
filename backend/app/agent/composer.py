@@ -327,7 +327,7 @@ def _metric_group_answer(resolved: ResolvedIntent, packed: list[tuple[HubReport,
         other, second = packed[1]
         direct = f"{_count(leader, lead)} over {_count(other, second)}."
     else:
-        noun = "freeze days" if resolved.metric == "freeze_day_pct" else "snow days" if resolved.metric == "snowfall_day_pct" else lead["label"].lower()
+        noun = _metric_noun(resolved.metric or "", lead["label"])
         direct = (
             f"{_mention(leader, seen)} has the most {noun}: {lead['numerator']} of {lead['denominator']}, {lead['value']:.1f}%."
         )
@@ -980,6 +980,18 @@ def canned_answer(resolved: ResolvedIntent) -> AnswerResult:
     )
 
 
+def _metric_noun(metric: str, fallback: str) -> str:
+    names = {
+        "snowfall_day_pct": "snow days",
+        "freeze_day_pct": "freeze days",
+        "heat_day_pct": "95 F days",
+        "extreme_heat_day_pct": "extreme heat days",
+        "heavy_rain_day_pct": "heavy-rain days",
+        "very_heavy_rain_day_pct": "very-heavy-rain days",
+    }
+    return names.get(metric, fallback.lower())
+
+
 def _metric_threshold(metric: str) -> str:
     text = {
         "snowfall_day_pct": "A snow day is daily snowfall >= 1 cm.",
@@ -1279,6 +1291,23 @@ def _gap_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> AnswerRes
     return _pack(resolved, [leader, other], text, [], _followups_for(resolved, [leader, other]))
 
 
+def _displayed_points(report: HubReport, hazards: list[str], excluded: list[str], label: str) -> float | None:
+    """The same tenth shown in the breakdown for this driver, not the unrounded contribution."""
+    focus = hazards or ["overall"]
+    total = _rank_score_for(report, hazards, excluded)
+    labels, _scores, shown, _total = _contribution_rows(report, focus, total, excluded)
+    for name, points in zip(labels, shown):
+        if name == label:
+            return points
+    return None
+
+
+def _rank_score_for(report: HubReport, hazards: list[str], excluded: list[str]) -> float:
+    if excluded:
+        return _renormalized(report, excluded)[0]
+    return report.focus_score(hazards)
+
+
 def _gap_sentence(leader: HubReport, other: HubReport, hazards: list[str], seen: set[str], resolved: ResolvedIntent) -> str:
     name = _mention(other, seen)
     lead = _mention(leader, seen)
@@ -1292,6 +1321,12 @@ def _gap_sentence(leader: HubReport, other: HubReport, hazards: list[str], seen:
     if gap is None:
         return f"{name} is lower at {score} than {lead} at {lead_score}."
     label, left_points, right_points = gap
+    left_shown = _displayed_points(leader, hazards, resolved.excluded_hazards, label)
+    right_shown = _displayed_points(other, hazards, resolved.excluded_hazards, label)
+    if left_shown is not None:
+        left_points = left_shown
+    if right_shown is not None:
+        right_points = right_shown
     return (
         f"{name} is lower at {score} than {lead} at {lead_score} "
         f"mainly because its {label} contributes {right_points:.1f} vs {left_points:.1f}."

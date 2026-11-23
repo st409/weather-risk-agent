@@ -144,6 +144,8 @@ def _check(expect: dict, body: dict) -> list[str]:
         errors.extend(_mainly_clause_errors(text, evidence.get("breakdown") or ""))
     if expect.get("lower_hubs_use_own_drivers"):
         errors.extend(_own_driver_errors(text, evidence.get("breakdown") or ""))
+    if expect.get("gap_matches_breakdown"):
+        errors.extend(_gap_match_errors(text, evidence.get("breakdown") or ""))
     if expect.get("answer_excludes_regex") and re.search(expect["answer_excludes_regex"], text):
         errors.append("answer matched a forbidden pattern")
     rankings = (body.get("evidence") or {}).get("rankings") or []
@@ -151,6 +153,19 @@ def _check(expect: dict, body: dict) -> list[str]:
         errors.append(f"rankings {len(rankings)} != {expect['rankings_count']}")
     if expect.get("hub_count") is not None and len(intent.get("hub_ids") or []) != expect["hub_count"]:
         errors.append(f"hub count {len(intent.get('hub_ids') or [])} != {expect['hub_count']}")
+    return errors
+
+
+def _gap_match_errors(text: str, breakdown: str) -> list[str]:
+    match = re.search(r"contributes (\d+(?:\.\d+)?) vs (\d+(?:\.\d+)?)", text)
+    if match is None:
+        return ["missing contribution gap"]
+    arrows = [float(number) for number in re.findall(r"→\s*(-?\d+(?:\.\d+)?)", breakdown)]
+    errors = []
+    for raw in match.groups():
+        value = float(raw)
+        if not any(abs(value - arrow) <= 0.05 + 1e-9 for arrow in arrows):
+            errors.append(f"gap {raw} is not a breakdown contribution")
     return errors
 
 

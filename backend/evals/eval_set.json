@@ -444,7 +444,8 @@
       "intent": "explain_hub",
       "hub_count": 2,
       "answer_contains": ["is lower at", "than", "mainly because", "contributes", "vs", "Minneapolis", "Detroit"],
-      "answer_excludes": ["mainly freeze-day rate (", "mainly snow-day rate ("]
+      "answer_excludes": ["mainly freeze-day rate (", "mainly snow-day rate ("],
+      "gap_matches_breakdown": true
     }
   },
   {
@@ -616,6 +617,62 @@
       "hub_ids": ["denver"],
       "answer_contains": ["Contributors, largest first", "freeze", "snow"],
       "answer_excludes": ["had"]
+    }
+  },
+  {
+    "id": "which_and_why_ranks_winter",
+    "turns": ["If we could only harden one hub this winter, which one should we choose and why?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "answer_contains": ["Minneapolis hub (Midwest region)", "72.3", "winter", "freeze-day rate"],
+      "answer_excludes": ["Which hub should I explain"]
+    }
+  },
+  {
+    "id": "and_denver_keeps_freeze_days",
+    "turns": ["What share of days did Detroit freeze?", "and Denver?"],
+    "expect": {
+      "intent": "metric_lookup",
+      "hub_ids": ["denver"],
+      "answer_contains": ["Denver hub (Mountain region)", "151", "41.4%", "32"],
+      "answer_excludes": ["winter score", "37.8", "disruption score"]
+    }
+  },
+  {
+    "id": "assumptions_about_ranking",
+    "turns": ["What assumptions most affect the ranking?"],
+    "expect": {
+      "intent": "methodology",
+      "answer_contains": ["0.30", "single year", "active now", "static"],
+      "answer_excludes": ["highest overall", "New York/Newark hub"]
+    }
+  },
+  {
+    "id": "most_extreme_heat_days",
+    "turns": ["Which hub has the most extreme heat days?"],
+    "expect": {
+      "intent": "metric_lookup",
+      "answer_contains": ["Dallas hub (South region)", "extreme heat days", "31 of 365", "8.5%"],
+      "answer_excludes": ["45.1", "32.3", "29.7", "most exposed to heat"]
+    }
+  },
+  {
+    "id": "similarity_is_not_ranked",
+    "turns": ["Which two hubs are most similar?"],
+    "expect": {
+      "needs_clarification": true,
+      "answer_contains": ["isn't a supported comparison", "compare"],
+      "answer_excludes": ["highest overall", "most exposed"]
+    }
+  },
+  {
+    "id": "overall_gap_matches_breakdown",
+    "turns": ["Which hubs are most exposed?", "Why is #2 lower?"],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_count": 2,
+      "answer_contains": ["mainly because", "contributes", "vs", "flood"],
+      "gap_matches_breakdown": true
     }
   }
 ]
