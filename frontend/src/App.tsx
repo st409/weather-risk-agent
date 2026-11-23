@@ -94,6 +94,7 @@ export function App() {
   const threadsRef = useRef(threads);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const keepListeningRef = useRef(false);
+  const prefixRef = useRef("");
   const committedRef = useRef("");
   const shownRef = useRef("");
   const resumeTimerRef = useRef<number | null>(null);
@@ -202,6 +203,7 @@ export function App() {
 
   function stopListening() {
     keepListeningRef.current = false;
+    prefixRef.current = "";
     committedRef.current = "";
     shownRef.current = "";
     if (resumeTimerRef.current !== null) {
@@ -243,7 +245,8 @@ export function App() {
         else interim += piece;
       }
       const committed = joinSpeech(carried, finals);
-      const shown = joinSpeech(committed, interim);
+      const transcript = joinSpeech(committed, interim);
+      const shown = composeVoice(prefixRef.current, transcript);
       committedRef.current = committed;
       shownRef.current = shown;
       setDraft(shown);
@@ -287,13 +290,14 @@ export function App() {
   function toggleMic() {
     if (pending) return;
     if (listening || keepListeningRef.current) {
-      const heard = shownRef.current.trim();
+      const heard = shownRef.current;
       stopListening();
-      if (heard) setDraft(heard);
+      setDraft(heard);
       return;
     }
+    prefixRef.current = draft;
     committedRef.current = "";
-    shownRef.current = "";
+    shownRef.current = draft;
     keepListeningRef.current = true;
     setVoiceError(null);
     stopSpeaking();
@@ -707,6 +711,12 @@ function clip(text: string): string {
 
 function joinSpeech(left: string, right: string): string {
   return `${left} ${right}`.replace(/\s+/g, " ").trim();
+}
+
+function composeVoice(prefix: string, transcript: string): string {
+  if (!transcript) return prefix;
+  const gap = prefix === "" || prefix.endsWith(" ") ? "" : " ";
+  return `${prefix}${gap}${transcript}`;
 }
 
 function loadThreads(): Thread[] {
