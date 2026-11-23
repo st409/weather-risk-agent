@@ -93,9 +93,11 @@ export function App() {
   const endRef = useRef<HTMLDivElement>(null);
   const threadsRef = useRef(threads);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const sendOnEndRef = useRef(true);
+  const keepListeningRef = useRef(false);
+  const committedRef = useRef("");
+  const shownRef = useRef("");
+  const resumeTimerRef = useRef<number | null>(null);
   const spokenKeyRef = useRef<string | null>(null);
-  const askRef = useRef<(text: string) => void>(() => {});
   threadsRef.current = threads;
   const voiceSupported = useMemo(() => recognitionSupported(), []);
 
@@ -119,9 +121,9 @@ export function App() {
   const groups = useMemo(() => groupThreads(threads), [threads]);
 
   async function ask(text: string) {
-    const message = text.trim();
+    const message = (keepListeningRef.current ? shownRef.current.trim() : "") || text.trim();
     if (!message || pending) return;
-    stopListening(false);
+    stopListening();
     stopSpeaking();
     setDraft("");
     setError(null);
@@ -167,8 +169,6 @@ export function App() {
     }
   }
 
-  askRef.current = ask;
-
   useEffect(() => {
     if (!readAloud) {
       stopSpeaking();
@@ -193,39 +193,47 @@ export function App() {
 
   useEffect(() => {
     return () => {
-      sendOnEndRef.current = false;
+      keepListeningRef.current = false;
+      if (resumeTimerRef.current !== null) window.clearTimeout(resumeTimerRef.current);
       recognitionRef.current?.abort();
       stopSpeaking();
     };
   }, []);
 
-  function stopListening(sendTranscript: boolean) {
+  function stopListening() {
+    keepListeningRef.current = false;
+    committedRef.current = "";
+    shownRef.current = "";
+    if (resumeTimerRef.current !== null) {
+      window.clearTimeout(resumeTimerRef.current);
+      resumeTimerRef.current = null;
+    }
     const recognition = recognitionRef.current;
+    recognitionRef.current = null;
+    setListening(false);
     if (!recognition) return;
-    sendOnEndRef.current = sendTranscript;
+    recognition.onend = null;
+    recognition.onresult = null;
+    recognition.onerror = null;
     try {
       recognition.stop();
     } catch {
-      recognitionRef.current = null;
-      setListening(false);
+      try {
+        recognition.abort();
+      } catch {
+        /* The session was already closed. */
+      }
     }
   }
 
-  function toggleMic() {
-    if (pending) return;
-    if (listening) {
-      stopListening(true);
-      return;
-    }
+  function startRecognition() {
     const Ctor = recognitionCtor();
-    if (!Ctor) return;
-    setVoiceError(null);
-    stopSpeaking();
+    if (!Ctor || !keepListeningRef.current) return;
     const recognition = new Ctor();
+    const carried = committedRef.current;
     recognition.lang = "en-US";
     recognition.interimResults = true;
-    recognition.continuous = false;
-    let latest = "";
+    recognition.continuous = true;
     recognition.onresult = (event) => {
       let finals = "";
       let interim = "";
@@ -234,12 +242,15 @@ export function App() {
         if (event.results[i].isFinal) finals += piece;
         else interim += piece;
       }
-      latest = `${finals}${interim}`.replace(/\s+/g, " ").trim();
-      setDraft(latest);
+      const committed = joinSpeech(carried, finals);
+      const shown = joinSpeech(committed, interim);
+      committedRef.current = committed;
+      shownRef.current = shown;
+      setDraft(shown);
     };
     recognition.onerror = (event) => {
       if (event.error === "aborted" || event.error === "no-speech") return;
-      sendOnEndRef.current = false;
+      keepListeningRef.current = false;
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         setVoiceError("Microphone permission was denied.");
       } else if (event.error === "audio-capture") {
@@ -249,23 +260,44 @@ export function App() {
       }
     };
     recognition.onend = () => {
-      setListening(false);
+      if (recognitionRef.current !== recognition) return;
       recognitionRef.current = null;
-      const transcript = latest;
-      const shouldSend = sendOnEndRef.current;
-      sendOnEndRef.current = true;
-      if (shouldSend && transcript) askRef.current(transcript);
+      if (!keepListeningRef.current) {
+        setListening(false);
+        return;
+      }
+      resumeTimerRef.current = window.setTimeout(() => {
+        resumeTimerRef.current = null;
+        if (keepListeningRef.current) startRecognition();
+      }, 250);
     };
-    sendOnEndRef.current = true;
     recognitionRef.current = recognition;
     try {
       recognition.start();
       setListening(true);
     } catch {
       recognitionRef.current = null;
+      if (!keepListeningRef.current) return;
+      keepListeningRef.current = false;
       setListening(false);
       setVoiceError("Voice input failed. Try again.");
     }
+  }
+
+  function toggleMic() {
+    if (pending) return;
+    if (listening || keepListeningRef.current) {
+      const heard = shownRef.current.trim();
+      stopListening();
+      if (heard) setDraft(heard);
+      return;
+    }
+    committedRef.current = "";
+    shownRef.current = "";
+    keepListeningRef.current = true;
+    setVoiceError(null);
+    stopSpeaking();
+    startRecognition();
   }
 
   function onSubmit(event: FormEvent) {
@@ -671,6 +703,10 @@ function driverLabel(name: string): string {
 function clip(text: string): string {
   const clean = text.replace(/\s+/g, " ").trim();
   return clean.length > 52 ? `${clean.slice(0, 49)}…` : clean;
+}
+
+function joinSpeech(left: string, right: string): string {
+  return `${left} ${right}`.replace(/\s+/g, " ").trim();
 }
 
 function loadThreads(): Thread[] {
