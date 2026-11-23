@@ -295,6 +295,14 @@ def _plural_question(resolved: ResolvedIntent) -> bool:
         return True
     if resolved.inherited and re.search(plural, prior) and not re.search(r"\bwhich hub\b", prior):
         return True
+    # "What about in January?" after why? or "and Chicago?" still ranks the set already in play.
+    if (
+        resolved.unsupported_window
+        and resolved.inherited
+        and len(resolved.hub_ids) >= 2
+        and not re.search(singular, question)
+    ):
+        return True
     return False
 
 
@@ -2328,12 +2336,76 @@ def _prepare_draft(text: str, skeleton: str) -> str:
     """Keep one skeleton Scores line and one Sources line. Do not cut numbers out of the reason."""
     cleaned = _unescape_breaks(_normalize_apostrophes((text or "").strip()))
     cleaned = _strip_hub_region_labels(cleaned)
+    if WINDOW_NOTICE in (skeleton or ""):
+        cleaned = _strip_unsupported_window_words(cleaned)
     cleaned = _append_skeleton_closers(_strip_model_closers(cleaned), skeleton)
     cleaned = _drop_legend_from_reason(cleaned, skeleton)
     cleaned = _own_investment_sentence(cleaned, skeleton)
-    cleaned = _repair_ranking_opening(cleaned, skeleton)
     cleaned = _prefer_digits(cleaned, skeleton)
+    cleaned = _drop_extra_number_sentences(cleaned, skeleton)
+    cleaned = _lead_with_gap(cleaned, skeleton)
+    cleaned = _repair_ranking_opening(cleaned, skeleton)
     return _dedupe_sentences(_restore_reason_facts(cleaned, skeleton))
+
+
+def _split_scores(text: str) -> tuple[str, str]:
+    match = re.search(r"(?is)\b(?:Scores|Sources)\s*:.*", text or "")
+    if not match:
+        return (text or "").strip(), ""
+    return text[: match.start()].strip(), match.group(0).strip()
+
+
+def _join_scores(body: str, tail: str) -> str:
+    return f"{body.strip()} {tail}".strip() if tail else body.strip()
+
+
+def _strip_unsupported_window_words(text: str) -> str:
+    """Yearly figures stay on calendar year 2025. A month name would reject the draft."""
+    cleaned = _UNSUPPORTED_WINDOW_WORD.sub("", text or "")
+    cleaned = re.sub(r"\b(?:in|during|for)\s+(?=[.,;]|$)", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([.,;])", r"\1", cleaned)
+    return cleaned.strip()
+
+
+def _drop_extra_number_sentences(text: str, skeleton: str) -> str:
+    """A number the skeleton does not have, such as 35.9, does not get served."""
+    allowed = _fact_numbers(skeleton)
+    body, tail = _split_scores(text)
+    kept = []
+    for sentence in re.split(r"(?<=[.!?])\s+", body):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        extra = [
+            value
+            for value in _fact_numbers(sentence)
+            if not any(abs(value - item) <= 0.1 + 1e-9 for item in allowed)
+        ]
+        if extra:
+            continue
+        kept.append(sentence)
+    return _join_scores(" ".join(kept), tail)
+
+
+def _lead_with_gap(text: str, skeleton: str) -> str:
+    """A why answer starts with who edges out whom, not a two-hub ranking sentence."""
+    wanted = _opening_sentence(skeleton)
+    if not re.search(r"\bedges out\b", wanted, re.I):
+        return text
+    if re.search(r"\bmost exposed\b", _before_scores(skeleton), re.I):
+        return text
+    body, tail = _split_scores(text)
+    kept = []
+    for sentence in re.split(r"(?<=[.!?])\s+", body):
+        sentence = sentence.strip()
+        if not sentence or re.search(r"\bmost exposed\b", sentence, re.I):
+            continue
+        kept.append(sentence)
+    if not kept or not re.search(r"\bedges out\b", kept[0], re.I):
+        kept = [sentence for sentence in kept if sentence.strip() != wanted.strip()]
+        kept.insert(0, wanted)
+    return _join_scores(" ".join(kept), tail)
 
 
 _NUMBER_ONES = {

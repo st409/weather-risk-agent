@@ -435,14 +435,25 @@ def _preserve_intent_for_window(parsed: ParsedMessage, context: SessionContext) 
         elif region is not None and not parsed.hub_ids:
             hubs = []
     elif intent in {"explain_hub", "metric_lookup"} and not hubs:
-        hubs = list((context.hub_ids or context.last_result_hub_ids)[:1])
+        ranked = list(context.last_result_hub_ids or [])
+        # why? and "and Chicago?" leave last_intent as explain_hub. The ranked set is still the conversation.
+        if intent == "explain_hub" and len(ranked) >= 2:
+            intent = "rank_hubs"
+            hubs = ranked
+            if not parsed.region_explicit:
+                region = context.region
+            parsed.metric = None
+        else:
+            hubs = list((context.hub_ids or ranked)[:1])
     parsed.intent = intent
     parsed.hub_ids = hubs
     parsed.region = region
     if not parsed.hazards_explicit:
         parsed.hazards = list(context.hazards)
-    if parsed.metric is None:
+    if parsed.metric is None and intent != "rank_hubs":
         parsed.metric = context.metric
+    if intent == "rank_hubs":
+        parsed.metric = None
     parsed.time_window = "last_calendar_year"
     parsed.unsupported_window = True
     parsed.inherited = True

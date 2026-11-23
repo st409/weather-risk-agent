@@ -43,6 +43,9 @@ def test_prompt_keeps_short_answers():
     assert "not fourteen" in ANSWER_SYSTEM
     assert "not ninety-nine" in ANSWER_SYSTEM
     assert "137 vs 120" in ANSWER_SYSTEM
+    assert "who edges out whom" in ANSWER_SYSTEM
+    assert "Never write a month name" in ANSWER_SYSTEM
+    assert "Do not add a number that is not in the skeleton" in ANSWER_SYSTEM
     assert "not a probability" in ANSWER_SYSTEM
     assert ">= 1 cm" in ANSWER_SYSTEM
     assert "is riskier" in ANSWER_SYSTEM
@@ -59,13 +62,16 @@ def test_draft_accepts_short_answers_and_checks_numbers():
     assert not _draft_is_usable(f"{WINDOW_NOTICE} Denver had 4 snow days in January.", evidence, [], "")
     skeleton = f"{WINDOW_NOTICE} Denver had 4 snow days in calendar year 2025."
     assert _draft_is_usable(skeleton, evidence, [], "")
-    rejected = apply_model_prose(
+    kept_window = apply_model_prose(
         AnswerResult(answer=skeleton),
         AnswerDraft(answer="Denver had 4 snow days in January."),
         None,
         evidence,
     )
-    assert rejected.answer == skeleton
+    assert kept_window.fallback is False
+    assert WINDOW_NOTICE in kept_window.answer
+    assert "January" not in kept_window.answer
+    assert "4 snow days" in kept_window.answer
     phrase = "mainly flood (12.4) and hurricane (10.3) of 42.9"
     why_evidence = {
         "required_driver_phrase": phrase,
@@ -218,8 +224,9 @@ def test_day_count_words_and_a_missing_notice_still_keep_the_draft():
     assert not _draft_is_usable(draft.replace("eight", "nine"), {}, [], skeleton)
     assert not _draft_is_usable(draft.replace("two point seven", "8.1"), {}, [], skeleton)
     kept = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=draft + " It has a score of 57.5."), None, {})
-    assert kept.fallback is True
-    assert kept.answer == skeleton
+    assert kept.fallback is False
+    assert "57.5" not in kept.answer
+    assert "8 snow days" in kept.answer
     assert "score of." not in kept.answer.lower()
     noticed = apply_model_prose(
         AnswerResult(answer=f"{WINDOW_NOTICE} {skeleton}"),
@@ -468,6 +475,71 @@ def test_plural_ranking_draft_names_every_hub_in_plain_words():
     assert "hub (" not in plain.answer
     assert plain.answer.lower().count("is more exposed to flood than miami") == 1
     assert plain.answer.lower().count("scores:") == 1
+
+
+def test_a_draft_cannot_add_a_number_or_a_month_or_a_two_hub_why():
+    ranked = (
+        f"{WINDOW_NOTICE} New York/Newark, Houston, and Dallas are the most exposed to weather disruption, "
+        "with New York/Newark on top. New York/Newark had 51 freezing days in 2025, the most in this set. "
+        "Scores: New York/Newark 46.8, Houston 44.2, Dallas 43.0. "
+        "Sources: Open-Meteo 2025 weather, FEMA NRI, NWS alerts."
+    )
+    evidence = {"required_notice": WINDOW_NOTICE, "unsupported_window": True}
+    invented = ranked.replace("the most in this set.", "the most in this set. Los Angeles scored 35.9.")
+    invented = invented.replace("in 2025", "in January 2025")
+    shown = apply_model_prose(AnswerResult(answer=ranked), AnswerDraft(answer=invented), None, evidence)
+    assert shown.fallback is False
+    assert "35.9" not in shown.answer
+    assert "January" not in shown.answer
+    assert WINDOW_NOTICE in shown.answer
+    assert shown.answer.startswith(WINDOW_NOTICE)
+    assert "New York/Newark, Houston, and Dallas" in shown.answer
+    assert "Open-Meteo 2025 weather" in shown.answer
+    assert shown.answer.lower().count("scores:") == 1
+    assert shown.answer.lower().count("sources:") == 1
+    gap = (
+        "Minneapolis edges out Detroit mainly because it had more freezing days (137 vs 120) and a higher snow-day rate; "
+        "both are rated high winter-risk by FEMA. "
+        "Scores: Minneapolis 45.1, Detroit 42.3."
+    )
+    preamble = (
+        "Minneapolis and Detroit are the hubs most exposed to winter disruption. " + gap
+    )
+    why = apply_model_prose(AnswerResult(answer=gap), AnswerDraft(answer=preamble), None, {})
+    assert why.fallback is False
+    assert why.answer.startswith("Minneapolis edges out Detroit mainly because")
+    assert "most exposed" not in why.answer.split("Scores:")[0]
+    assert why.answer.lower().count("edges out") == 1
+    assert "137 vs 120" in why.answer
+
+
+def test_january_after_follow_ups_keeps_the_ranked_set(client):
+    first = _chat(client, "Which hubs in the Midwest are most exposed to winter disruption?")
+    why = _chat(client, "why?", first["session_id"])
+    chicago = _chat(client, "and Chicago?", why["session_id"])
+    body = _chat(client, "What about in January 2025 only?", chicago["session_id"])
+    assert body["fallback"] is False
+    assert body["intent"]["intent"] == "rank_hubs"
+    assert body["intent"]["hub_ids"] == ["minneapolis", "detroit", "chicago"]
+    assert body["intent"]["hazards"] == ["winter"]
+    text = body["answer"]["answer"]
+    assert text.startswith(WINDOW_NOTICE)
+    assert "January" not in text
+    assert not re.search(r"\b(february|march|april|june|july|august|september|october|november|december)\b", text, re.I)
+    assert "Minneapolis, Detroit, and Chicago" in text
+    assert "Open-Meteo 2025 weather" in text
+    assert text.lower().count("scores:") == 1
+    assert text.lower().count("sources:") == 1
+    overall = _chat(client, "Rank all 10 hubs by overall weather disruption risk.")
+    january = _chat(client, "What about in January 2025 only?", overall["session_id"])
+    assert january["fallback"] is False
+    assert january["intent"]["intent"] == "rank_hubs"
+    assert len(january["intent"]["hub_ids"]) == 10
+    overall_text = january["answer"]["answer"]
+    assert overall_text.startswith(WINDOW_NOTICE)
+    assert "January" not in overall_text
+    assert "Open-Meteo 2025 weather" in overall_text
+    assert overall_text.lower().count("scores:") == 1
 
 
 def test_single_hub_follow_up_stays_relative_to_the_set(client):

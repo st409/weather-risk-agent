@@ -132,6 +132,44 @@ def test_negation_verbs_drop_the_named_hazard():
         assert resolved.hub_ids == []
 
 
+def test_january_after_a_follow_up_keeps_the_ranked_set():
+    after_chicago = SessionContext(
+        hub_ids=["minneapolis", "detroit", "chicago"],
+        region="Midwest",
+        hazards=["winter"],
+        last_intent="explain_hub",
+        last_result_hub_ids=["minneapolis", "detroit", "chicago"],
+        last_user_message="and Chicago?",
+    )
+    resolved = _resolve("What about in January 2025 only?", after_chicago)
+    assert resolved.intent == "rank_hubs"
+    assert resolved.hub_ids == ["minneapolis", "detroit", "chicago"]
+    assert resolved.region == "Midwest"
+    assert resolved.hazards == ["winter"]
+    assert resolved.unsupported_window is True
+    assert resolved.time_window == "last_calendar_year"
+    assert resolved.metric is None
+    after_why = SessionContext(
+        hub_ids=["detroit"],
+        focus_hub_id="detroit",
+        region="Midwest",
+        hazards=["winter"],
+        last_intent="explain_hub",
+        last_result_hub_ids=["minneapolis", "detroit", "chicago"],
+    )
+    again = _resolve("What about in January 2025 only?", after_why)
+    assert again.intent == "rank_hubs"
+    assert again.hub_ids == ["minneapolis", "detroit", "chicago"]
+    alone = SessionContext(
+        hub_ids=["dallas"],
+        last_intent="explain_hub",
+        last_result_hub_ids=["dallas"],
+    )
+    single = _resolve("What about in January 2025 only?", alone)
+    assert single.intent == "explain_hub"
+    assert single.hub_ids == ["dallas"]
+
+
 def test_january_follow_up_keeps_the_snowfall_question():
     context = SessionContext(
         hub_ids=["denver"],
