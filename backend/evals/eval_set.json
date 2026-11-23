@@ -26,7 +26,7 @@
     "turns": ["Compare Miami and Houston in terms of hurricane and flood exposure."],
     "expect": {
       "intent": "compare_hubs",
-      "answer_contains": ["Miami hub (South region)", "Houston hub (South region)", "hurricane", "flood", "practically tied", "does not separate"],
+      "answer_contains": ["Miami", "Houston", "hurricane", "flood", "practically tied", "does not separate"],
       "answer_excludes": ["I'd prioritize"],
       "score_hazards": ["hurricane", "flood"],
       "has_assumptions": true,
@@ -132,7 +132,7 @@
     "turns": ["How many days did it snow in Denver last year?"],
     "expect": {
       "intent": "metric_lookup",
-      "answer_contains": ["Denver hub (Mountain region)", ">= 1 cm", "Open-Meteo"],
+      "answer_contains": ["Denver", ">= 1 cm", "Open-Meteo"],
       "answer_excludes": ["risk score", "/100", "hurricane", "Contributors", "winter score"],
       "answer_regex": "\\d+(\\.\\d+)?%",
       "has_sources": true,
@@ -240,7 +240,7 @@
     "expect": {
       "intent": "metric_lookup",
       "hub_ids": ["denver"],
-      "answer_contains": ["Denver hub (Mountain region)"],
+      "answer_contains": ["Denver"],
       "answer_excludes": ["Miami", "Houston"]
     }
   },
@@ -273,7 +273,7 @@
     "turns": ["Compare Miami and Houston in terms of hurricane and flood exposure."],
     "expect": {
       "intent": "compare_hubs",
-      "answer_contains": ["Miami hub (South region)", "Houston hub (South region)", "does not separate", "Scores:", "Sources:", "FEMA NRI"],
+      "answer_contains": ["Miami", "Houston", "does not separate", "Scores:", "Sources:", "FEMA NRI"],
       "answer_regex": "Scores: hurricane (?:Houston|Miami) \\d+\\.\\d+, (?:Houston|Miami) \\d+\\.\\d+; flood (?:Houston|Miami) \\d+\\.\\d+, (?:Houston|Miami) \\d+\\.\\d+",
       "no_fallback": true,
       "one_sources_line": true,
@@ -669,7 +669,7 @@
     "expect": {
       "intent": "metric_lookup",
       "hub_ids": ["denver"],
-      "answer_contains": ["Denver hub (Mountain region)", "151", "freezing days", "41.4%", "of the year", "32"],
+      "answer_contains": ["Denver", "151", "freezing days", "41.4%", "of the year", "32"],
       "answer_excludes": ["winter score", "37.8", "disruption score", "Scores:", "higher = more exposed", "most exposed"]
     }
   },
@@ -687,7 +687,7 @@
     "turns": ["Which hub has the most extreme heat days?"],
     "expect": {
       "intent": "metric_lookup",
-      "answer_contains": ["Dallas hub (South region)", "extreme heat days", "31 of 365", "8.5%"],
+      "answer_contains": ["Dallas", "extreme heat days", "31 of 365", "8.5%"],
       "answer_excludes": ["45.1", "32.3", "29.7", "most exposed to heat"]
     }
   },
@@ -795,7 +795,7 @@
     "expect": {
       "intent": "metric_lookup",
       "hub_ids": ["atlanta"],
-      "answer_contains": ["Atlanta hub (South region)", "29", "8.0%", "of the year"],
+      "answer_contains": ["Atlanta", "29", "8.0%", "of the year"],
       "answer_excludes": ["most exposed", "Scores:", "higher = more exposed"],
       "one_sources_line": true
     }

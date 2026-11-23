@@ -38,6 +38,8 @@ def _chat(client: TestClient, message: str, session_id: str | None = None) -> di
 def test_prompt_keeps_short_answers():
     assert "2 or 3" in ANSWER_SYSTEM
     assert "every hub on the Scores line" in ANSWER_SYSTEM
+    assert "plain city names" in ANSWER_SYSTEM
+    assert "<Name> hub (<Region> region)" not in ANSWER_SYSTEM
     assert "not fourteen" in ANSWER_SYSTEM
     assert "not ninety-nine" in ANSWER_SYSTEM
     assert "137 vs 120" in ANSWER_SYSTEM
@@ -299,16 +301,18 @@ def test_tied_next_day_counts_are_all_named():
     text = _next_count_clause(packed, set())
     assert "Next are" in text
     assert "each 3 of 365" in text
-    assert "Los Angeles hub (West region)" in text
-    assert "Denver hub (Mountain region)" in text
-    assert "New York/Newark hub (Northeast region)" in text
+    assert "Los Angeles" in text
+    assert "Denver" in text
+    assert "New York/Newark" in text
+    assert "hub (" not in text
     assert "Houston" not in text
 
 
 def test_snow_answer_leads_with_count_threshold_and_source(client):
     body = _chat(client, "How many days did it snow in Denver last year?")
     text = body["answer"]["answer"]
-    assert text.startswith("Denver hub (Mountain region) had")
+    assert text.startswith("Denver had")
+    assert "hub (" not in text
     assert ">= 1 cm" in text
     assert "Open-Meteo" in text
     assert "/100" not in text
@@ -354,6 +358,8 @@ def test_rank_explains_second_and_third(client):
     body = _chat(client, "Which hubs in the Midwest are most exposed to winter disruption?")
     text = body["answer"]["answer"]
     assert text.startswith("Minneapolis, Detroit, and Chicago")
+    assert ", the most in this set" in text
+    assert "and the most in this set" not in text
     assert "Chicago" in text
     assert "Detroit" in text
     assert "Scores:" in text
@@ -451,6 +457,17 @@ def test_plural_ranking_draft_names_every_hub_in_plain_words():
     assert "137 vs 120" in restored.answer
     assert restored.answer.lower().count("edges out") == 1
     assert restored.answer.lower().count("scores:") == 1
+    labeled_compare = (
+        "Houston hub (South region) is more exposed to flood than Miami hub (South region). "
+        "Houston had 14 heavy-rain days and Miami had 5. "
+        "Houston hub (South region) is more exposed to flood than Miami hub (South region). "
+        "Scores: flood Houston 44.9, Miami 40.2."
+    )
+    plain = apply_model_prose(AnswerResult(answer=labeled_compare), AnswerDraft(answer=labeled_compare), None, {})
+    assert plain.fallback is False
+    assert "hub (" not in plain.answer
+    assert plain.answer.lower().count("is more exposed to flood than miami") == 1
+    assert plain.answer.lower().count("scores:") == 1
 
 
 def test_single_hub_follow_up_stays_relative_to_the_set(client):
@@ -569,8 +586,9 @@ def test_where_to_invest_suggests_from_the_leaders_drivers(client):
 def test_compare_ties_and_keeps_each_baseline(client):
     body = _chat(client, "Compare Miami and Houston in terms of hurricane and flood exposure.")
     text = body["answer"]["answer"]
-    assert "Miami hub (South region)" in text
-    assert "Houston hub (South region)" in text
+    assert "Miami" in text
+    assert "Houston" in text
+    assert "hub (" not in text
     assert "practically tied" in text
     assert "does not separate" in text
     assert "both" not in text.lower()

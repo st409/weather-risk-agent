@@ -40,7 +40,7 @@ If the skeleton says two hubs are effectively tied, keep "effectively tied" and 
 If the skeleton includes "Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025", copy that sentence unchanged. Never say those yearly figures belong to a month or a custom range. Do not add that sentence when the skeleton omits it.
 Do not write a "Contributors, largest first" breakdown. The server appends that after your text.
 If the skeleton is a day count, keep every count, percent, threshold, and source, and write them as digits, for example "17 days, 4.7%". 32°F and 32 F are the same threshold. Do not add a risk score or a winter-score breakdown.
-For a plural ranking, every sentence uses the plain city names from the skeleton. Do not write "hub (Region region)" anywhere in that answer. Sentence 1 names every hub on the Scores line and no other hub. A later sentence may mention another hub only as trailing, without a new score. On other answers, the first mention of a hub is "<Name> hub (<Region> region)". After that, use only the hub name.
+Use plain city names everywhere. Never write "hub (Region region)". For a plural ranking, sentence 1 names every hub on the Scores line and no other hub. A later sentence may mention another hub only as trailing, without a new score.
 Use only numbers that appear in the skeleton or the evidence. Do not invent hubs, drivers, or scores. A snow day is daily snowfall >= 1 cm.
 Return follow_up_questions as an empty list. The server supplies them."""
 

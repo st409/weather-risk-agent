@@ -117,7 +117,8 @@ def test_direct_score_endpoints(client):
 def test_normal_answers_name_scope_without_a_long_dump(client):
     denver = _chat(client, "How many days did it snow in Denver last year?")
     text = denver["answer"]["answer"]
-    assert "Denver hub (Mountain region)" in text
+    assert text.startswith("Denver had")
+    assert "hub (" not in text
     assert "1 cm" in text
     assert "Open-Meteo" in text or "stand-in" in text
     assert "risk score" not in text.lower()

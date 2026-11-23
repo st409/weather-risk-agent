@@ -438,7 +438,7 @@ def _count_fact(report: HubReport, metric_name: str, peers: list[HubReport]) -> 
     if valid and metric_name == "freeze_days_pct" and count / valid >= 1 / 3:
         text += ", more than a third of the year"
     if peers and all(count >= int(getattr(other.metrics, count_name) or 0) for other in peers):
-        text += " and the most of all 10 hubs" if len(peers) == 10 else " and the most in this set" if len(peers) > 1 else ""
+        text += ", the most of all 10 hubs" if len(peers) == 10 else ", the most in this set" if len(peers) > 1 else ""
     return text + "."
 
 
@@ -565,7 +565,7 @@ def _count_clause(report: HubReport, metric_name: str, peers: list[HubReport]) -
     year = "2025" if str(report.window_start).startswith("2025") or "2025" in report.window_label else report.window_label
     text = f"{report.name} had {count} {noun} in {year}"
     if peers and len(peers) > 1 and all(count >= int(getattr(other.metrics, count_name) or 0) for other in peers):
-        text += " and the most of all hubs" if len(peers) >= 10 else " and the most in this set"
+        text += ", the most of all hubs" if len(peers) >= 10 else ", the most in this set"
     return text
 
 
@@ -922,7 +922,7 @@ def _followups_for(resolved: ResolvedIntent, reports: list[HubReport]) -> list[s
     elif other is not None and "heat" not in resolved.hazards:
         ideas.append(f"Compare {_place(top)} and {_place(other)} on heat.")
     elif peer is not None and resolved.intent != "compare_hubs":
-        ideas.append(f"Compare {_place(top)} and {peer.name} hub ({peer.region} region).")
+        ideas.append(f"Compare {_place(top)} and {peer.name}.")
     if resolved.intent != "rank_hubs":
         ideas.append(f"Which hubs in the {top.region} region are most exposed to winter disruption?")
     return ideas
@@ -973,7 +973,7 @@ def _compose(resolved: ResolvedIntent, reports: list[HubReport], direct: str, wh
 
 
 def _place(report: HubReport) -> str:
-    return f"{report.name} hub ({report.region} region)"
+    return report.name
 
 
 def _mention(report: HubReport, seen: set[str]) -> str:
@@ -1014,9 +1014,38 @@ def _source_line(resolved: ResolvedIntent, reports: list[HubReport]) -> str:
     return f"Sources: {weather} {window}, FEMA NRI, NWS alerts."
 
 
+_HUB_REGION_LABEL = re.compile(r"\s+hub\s*\([^)]*\bregion\)", re.I)
+
+
+def _strip_hub_region_labels(text: str) -> str:
+    """Plain city names. 'Houston hub (South region)' is just Houston."""
+    cleaned = _HUB_REGION_LABEL.sub("", text or "")
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return re.sub(r"\s+([.,;])", r"\1", cleaned)
+
+
+def _dedupe_sentences(text: str) -> str:
+    """Drop a second copy of the same sentence. Scores and Sources stay put."""
+    match = re.search(r"(?is)\b(?:Scores|Sources)\s*:.*", text or "")
+    body = text[: match.start()] if match else (text or "")
+    tail = match.group(0) if match else ""
+    kept = []
+    seen = set()
+    for sentence in re.split(r"(?<=[.!?])\s+", body.strip()):
+        sentence = sentence.strip()
+        key = re.sub(r"\s+", " ", sentence)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        kept.append(sentence)
+    cleaned = " ".join(kept)
+    return f"{cleaned} {tail.strip()}".strip() if tail else cleaned
+
+
 def _finish_text(resolved: ResolvedIntent, reports: list[HubReport], sentences: list[str]) -> str:
     parts = [_window_notice(resolved), *sentences, _source_line(resolved, reports)]
-    return " ".join(part.strip() for part in parts if part and part.strip())
+    text = " ".join(part.strip() for part in parts if part and part.strip())
+    return _dedupe_sentences(_strip_hub_region_labels(text))
 
 
 def _full_breakdown(resolved: ResolvedIntent, reports: list[HubReport]) -> str:
@@ -2298,12 +2327,13 @@ def _append_skeleton_closers(text: str, skeleton: str) -> str:
 def _prepare_draft(text: str, skeleton: str) -> str:
     """Keep one skeleton Scores line and one Sources line. Do not cut numbers out of the reason."""
     cleaned = _unescape_breaks(_normalize_apostrophes((text or "").strip()))
+    cleaned = _strip_hub_region_labels(cleaned)
     cleaned = _append_skeleton_closers(_strip_model_closers(cleaned), skeleton)
     cleaned = _drop_legend_from_reason(cleaned, skeleton)
     cleaned = _own_investment_sentence(cleaned, skeleton)
     cleaned = _repair_ranking_opening(cleaned, skeleton)
     cleaned = _prefer_digits(cleaned, skeleton)
-    return _restore_reason_facts(cleaned, skeleton)
+    return _dedupe_sentences(_restore_reason_facts(cleaned, skeleton))
 
 
 _NUMBER_ONES = {
