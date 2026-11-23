@@ -6,12 +6,11 @@ from datetime import date
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agent.composer import WINDOW_NOTICE, _draft_is_usable, _fact_numbers, apply_model_prose
+from app.agent.composer import _draft_rejection, _fact_numbers, apply_model_prose, window_notice
 from app.agent.llm import ANSWER_SYSTEM
 from app.agent.schemas import AnswerDraft, AnswerResult, IntentResult
-from app.db.repository import get_daily_window, latest_score, save_daily_window, save_score_snapshot, seed_reference_data
+from app.db.repository import get_daily_window, save_daily_window, save_score_snapshot, seed_reference_data
 from app.main import create_app
-from app.risk.engine import recompute_stale_scores
 from app.risk.hubs import HUB_BY_ID
 from app.risk.types import DailyObs
 from app.risk.weather import load_daily
@@ -22,8 +21,16 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test.db"))
     monkeypatch.setenv("WEATHER_DATA_MODE", "fixture")
     monkeypatch.setenv("WEATHER_RISK_DISABLE_LLM", "1")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MIN", "0")
     with TestClient(create_app()) as test_client:
         yield test_client
+
+
+WINDOW_NOTICE = window_notice("last_calendar_year")
+
+
+def _draft_is_usable(text: str, evidence, _scores, skeleton: str = "") -> bool:
+    return _draft_rejection(text, evidence, skeleton) is None
 
 
 def _chat(client: TestClient, message: str, session_id: str | None = None) -> dict:
@@ -55,8 +62,9 @@ def test_prompt_keeps_short_answers():
 def test_draft_accepts_short_answers_and_checks_numbers():
     assert _draft_is_usable("Denver is highest at 44.8. Based on 2025 weather data.", {"rankings": [{"focus_score": 44.8}]}, [], "")
     assert _draft_is_usable(" ".join(["briefing"] * 200), {"rankings": [{"hub_id": "miami"}]}, [], "")
-    assert _draft_is_usable("The gap is 44.9.", {"rankings": [{"hub_id": "miami", "focus_score": 44.8}]}, [], "")
-    assert not _draft_is_usable("The gap is 12.0.", {"rankings": [{"hub_id": "miami", "focus_score": 44.8}]}, [], "")
+    gap = "The gap is 44.8."
+    assert _draft_is_usable("The gap is 44.9.", {"rankings": [{"hub_id": "miami", "focus_score": 44.8}]}, [], gap)
+    assert not _draft_is_usable("The gap is 12.0.", {"rankings": [{"hub_id": "miami", "focus_score": 44.8}]}, [], gap)
     evidence = {"required_notice": WINDOW_NOTICE, "unsupported_window": True, "rankings": [{"focus_score": 4.0}]}
     assert not _draft_is_usable("Denver had 4 snow days in January.", evidence, [], "")
     assert not _draft_is_usable(f"{WINDOW_NOTICE} Denver had 4 snow days in January.", evidence, [], "")
@@ -79,9 +87,9 @@ def test_draft_accepts_short_answers_and_checks_numbers():
         "rankings": [{"focus_score": 42.9, "drivers": [{"contribution": 12.4}, {"contribution": 10.3}]}],
     }
     why_skeleton = f"The Dallas score is 42.9, {phrase}."
-    assert not _draft_is_usable("Dallas is high.", why_evidence, [], "")
-    assert not _draft_is_usable(f"{phrase}. Winter is 37.8.", why_evidence, [], "")
-    assert _draft_is_usable(why_skeleton, why_evidence, [], "")
+    assert not _draft_is_usable("Dallas is high.", why_evidence, [], why_skeleton)
+    assert not _draft_is_usable(f"{phrase}. Winter is 37.8.", why_evidence, [], why_skeleton)
+    assert _draft_is_usable(why_skeleton, why_evidence, [], why_skeleton)
     kept = apply_model_prose(AnswerResult(answer=why_skeleton), AnswerDraft(answer="Dallas is high because winter is 37.8."), None, why_evidence)
     assert kept.answer == why_skeleton
     scored = {
@@ -89,8 +97,9 @@ def test_draft_accepts_short_answers_and_checks_numbers():
         "breakdown": "Contributors, largest first: flood 49.6 → 12.4 of the 42.9 points and hurricane 51.5 → 10.3 of the 42.9 points.",
         "rankings": [{"focus_score": 42.9, "hazard_scores": {"flood": 49.6, "hurricane": 51.5}, "drivers": [{"contribution": 12.4}, {"contribution": 10.3}]}],
     }
-    assert not _draft_is_usable("Dallas is high, mainly flood (49.6) and hurricane (51.5) of 42.9.", scored, [], "")
-    assert not _draft_is_usable("Dallas is high, mainly winter (37.8) and flood (8.0) of 80.0.", {"breakdown": "Contributors, largest first: winter 37.8 → 11.3 of the 80.0 points and flood 32.0 → 8.0 of the 80.0 points.", "rankings": [{"hazard_scores": {"winter": 37.8, "flood": 32.0}}]}, [], "")
+    assert not _draft_is_usable("Dallas is high, mainly flood (49.6) and hurricane (51.5) of 42.9.", scored, [], why_skeleton)
+    points = "Dallas is high, mainly winter (11.3) and flood (8.0) of 80.0."
+    assert not _draft_is_usable("Dallas is high, mainly winter (37.8) and flood (32.0) of 80.0.", {}, [], points)
     assert _draft_is_usable(why_skeleton, scored, [], "")
     replaced = apply_model_prose(AnswerResult(answer=why_skeleton), AnswerDraft(answer="Dallas is high, mainly flood (49.6) and hurricane (51.5) of 42.9."), None, scored)
     assert replaced.answer == why_skeleton
@@ -206,7 +215,6 @@ def test_day_count_words_and_a_missing_notice_still_keep_the_draft():
     percent_words = "Denver hub (Mountain region) had seventeen snow days (4.7 percent of the year). A snow day is daily snowfall >= 1 cm."
     kept_snow = apply_model_prose(AnswerResult(answer=snow), AnswerDraft(answer=percent_words), None, {})
     assert kept_snow.fallback is False
-    assert kept_snow.rejection_reason is None
     miami = "Houston had 14 heavy-rain days and Miami had 5. Scores: hurricane Houston 80.0, Miami 80.0; flood Houston 44.9, Miami 40.2."
     assert _draft_is_usable(miami.replace("44.9", "44.9, about forty-five"), {}, [], miami)
     assert _fact_numbers("fourteen") == [14.0]
@@ -267,7 +275,6 @@ def test_gap_draft_that_reverses_the_leader_is_rejected(client):
     rejected = apply_model_prose(base, AnswerDraft(answer=flipped), None, body["evidence"])
     assert rejected.answer == base.answer
     assert rejected.fallback is True
-    assert rejected.rejection_reason
     visible = " ".join([rejected.answer, *rejected.uncertainties, *rejected.assumptions]).lower()
     assert "did not return a valid briefing" not in visible
 
@@ -723,8 +730,20 @@ def test_stale_cache_note_and_score_use_one_centimeter(tmp_path, monkeypatch):
     stored = get_daily_window("denver", start, end)
     assert stored is not None
     assert ">= 1 cm" in stored["uncertainty_note"]
-    assert latest_score("denver") is None
+    from app.risk.scoring import metrics_from_days
 
+    assert metrics_from_days(batch.days).snow_days == 1
+
+    import sqlite3
+
+    def score_count() -> int:
+        connection = sqlite3.connect(tmp_path / "cache.db")
+        try:
+            return connection.execute("SELECT COUNT(*) FROM risk_scores").fetchone()[0]
+        finally:
+            connection.close()
+
+    assert score_count() == 0
     save_score_snapshot(
         {
             "hub_id": "denver",
@@ -734,11 +753,7 @@ def test_stale_cache_note_and_score_use_one_centimeter(tmp_path, monkeypatch):
             "overall_score": 10,
             "hazard_scores": [{"hazard": "winter", "score": 10}],
             "metrics": {"snow_days": 2},
+            "weather_fallback": True,
         }
     )
-    refreshed = recompute_stale_scores()
-    assert refreshed == 1
-    latest = latest_score("denver")
-    assert latest is not None
-    assert latest["snow_day_rule"] == "gte_1cm"
-    assert latest["metrics"]["snow_days"] == 1
+    assert score_count() == 0

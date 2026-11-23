@@ -9,20 +9,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.chat import router as chat_router
 from app.api.hubs import router as hubs_router
-from app.config import allowed_origins
-from app.db.repository import init_db, seed_reference_data
-from app.risk.engine import recompute_stale_scores
+from app.api.ratelimit import RateLimiter
+from app.config import allowed_origins, chat_rate_limit_per_minute
+from app.db.repository import seed_reference_data
 
 
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        init_db()
         seed_reference_data()
-        recompute_stale_scores()
         yield
 
     app = FastAPI(title="Weather Risk Agent", version="0.1.0", lifespan=lifespan)
+    app.state.chat_limiter = RateLimiter(chat_rate_limit_per_minute())
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins(),

@@ -18,6 +18,28 @@ flowchart TD
 
 The model does not rank hubs. Python fetches data, scores it, and checks JSON schema. If the model is missing or fails schema validation twice, the deterministic briefing is returned and the scores still come from Python.
 
+## Repository structure
+
+```text
+weather-risk-agent/
+├── backend/
+│   ├── app/
+│   │   ├── api/        FastAPI routes: chat, hubs, rate limit
+│   │   ├── agent/      orchestrator, intent rules, composer, model calls, schemas
+│   │   ├── risk/       scoring, weather and FEMA clients, hub list
+│   │   └── db/         SQLite schema and repository
+│   ├── data/           weather_risk.db, FEMA snapshot CSV and metadata
+│   ├── tests/          pytest
+│   └── evals/          eval_set.json and run_eval.py
+├── frontend/src/       Vite + React chat UI, voice input and read-aloud
+├── scripts/            setup, dev, test, eval, seed tasks
+├── docs/ai-session/    exported AI build chats
+├── render.yaml         Render service settings for the API
+├── README.md
+├── DESIGN.md
+└── AI_SESSION.md
+```
+
 ## Components
 
 | Piece | Role |
@@ -51,7 +73,9 @@ Every answer carries `source`, `source_type` (`live_api`, `cached_api`, or `stat
 
 ## Storage
 
-SQLite holds hubs, the FEMA rows, cached daily observations, cached alerts, score snapshots, chat sessions, messages, and session context. Session context keeps the last hubs, region, hazards, metric, time window, intent, ordered result ids, and the previous user message. That previous turn is sent to the intent parser on the next question. The answer call receives computed scores as read-only input and has no score field in its schema. The response scores are the ones Python computed.
+SQLite holds hubs, the FEMA rows, cached daily observations, cached alerts, score snapshots, and, while the app is running, chat sessions, messages, and session context. The committed database does not keep chat rows. Session context keeps the last hubs, region, hazards, metric, time window, intent, ordered result ids, and the previous user message. That previous turn is sent to the intent parser on the next question. The answer call receives computed scores as read-only input and has no score field in its schema. The response scores are the ones Python computed.
+
+SQLite fits because it is a single file with no server to run, and ten hubs plus their cached weather are far below anything that needs a networked database. The committed file is also what the free Render instance starts with.
 
 Follow-ups are resolved in Python before tools run. After "Compare Miami and Houston in terms of hurricane and flood exposure", "What about floods only?" stays a comparison of those two hubs with hazards set to flood. "Why is the top one risky?" explains the first hub in the previous ordering. If the reference cannot be resolved, the agent asks one question.
 
@@ -146,6 +170,8 @@ Two schema-checked calls when a key is present:
 
 Python overwrites `scores` and `sources` after the second call. Explicit hubs and hazards found in the text stay authoritative. One schema retry, then the deterministic answer.
 
+Answer pipeline: deterministic scores, then the composer builds a wording skeleton from them, then the model (if a key is set) rephrases the skeleton, then a validator checks the draft against the evidence and the answer rules. A rejected draft is replaced by the skeleton, so the user always gets a score-backed answer.
+
 "Safer" means a lower disruption score. With no hubs in context, the agent asks which hubs to compare and states that definition.
 
 ## Evaluation
@@ -156,10 +182,17 @@ Python overwrites `scores` and `sources` after the second call. Explicit hubs an
 
 Answers are English only. A message in another language gets one English redirect and no ranking.
 
-Supported time windows are calendar year 2025 and a trailing 365 days. A single month or a custom range is not scored. The reply says those two windows are supported, then answers for calendar year 2025. The previous intent is kept, so a snow-day question stays a snow-day question.
+Supported time windows are the previous calendar year and the last 365 days. A single month or a custom range is not scored. The reply names the two supported windows, then answers for the window that was resolved. A trailing-365 answer says "in the last 365 days". The previous intent is kept, so a snow-day question stays a snow-day question.
 
 Overall weights are fixed: winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, heat 0.10. These weights are an assumption. In a real system they would be calibrated against the company's downtime days and costs. Asking to ignore a hazard drops that weight and renormalizes the rest. Business-importance weights stay at 1.0 and are not applied.
 
 ## Scope left out
 
-Fixed hubs and five hazards only. No wildfire score, no freight weighting, no history chart, and no hosted deployment. FEMA scores for these urban counties are often saturated; the daily rates are what separate them, and the answers say so.
+Fixed hubs and five hazards only. No wildfire score, no freight weighting, and no score-history chart. Deployment is on Render (API and chat UI). FEMA scores for these urban counties are often saturated; the daily rates are what separate them, and the answers say so.
+
+Bonus: optional voice input (mic) and read-aloud, using the browser Web Speech API in the frontend. Nothing on the backend depends on it.
+
+## Next steps
+
+- Scheduled alert when a hub's score changes between snapshots.
+- Score-history chart from the stored score snapshots.

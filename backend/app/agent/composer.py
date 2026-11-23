@@ -5,20 +5,17 @@ from __future__ import annotations
 import logging
 import math
 import re
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
 from app.agent.schemas import AnswerDraft, AnswerResult, ScoreItem, SourceItem
-from app.agent.session_context import ResolvedIntent, _unsupported_window
+from app.agent.session_context import METRIC_HAZARD, ResolvedIntent, _unsupported_window
+from app.risk.hazards import snapshot_meta
 from app.risk.hubs import HUBS
-from app.risk.scoring import metric_payload
-from app.risk.types import HubReport, SourceRef
-
-NRI_NOTE = (
-    "FEMA hazard scores for these large counties often sit near the top of the 0-100 scale "
-    "because the index includes expected loss, not only how often the weather happens. "
-    "Daily rates are what separate saturated baselines."
-)
+from app.risk.scoring import OVERALL_WEIGHTS, metric_payload
+from app.risk.types import HubAlerts, HubReport, SourceRef
+from app.risk.windows import last_calendar_year, resolve_window, window_years
 
 HAZARD_LABEL = {
     "winter": "winter",
@@ -30,14 +27,6 @@ HAZARD_LABEL = {
 }
 
 
-OVERALL_WEIGHTS = {
-    "winter": 0.30,
-    "flood": 0.25,
-    "hurricane": 0.20,
-    "severe_storm": 0.15,
-    "heat": 0.10,
-}
-
 EXAMPLES = (
     "Which hub is most exposed to flooding?",
     "Compare Miami and Houston on hurricane and flood.",
@@ -46,8 +35,6 @@ EXAMPLES = (
 
 
 def deterministic_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> AnswerResult:
-    if resolved.intent == "alerts":
-        return _alerts_answer(reports)
     if resolved.explain_gap:
         return _gap_answer(resolved, reports)
     ordered = _order_for(resolved, reports)
@@ -75,7 +62,7 @@ def clarification_answer(question: str) -> AnswerResult:
             SourceItem(
                 name="Fixed hub list",
                 source_type="static_public_dataset",
-                retrieved_at="2026-11-23",
+                retrieved_at=_today(),
                 uncertainty_note="Hub names, coordinates, and regions are maintained in code.",
             )
         ],
@@ -89,16 +76,6 @@ def clarification_answer(question: str) -> AnswerResult:
 
 def order_reports(reports: list[HubReport], hazards: list[str], safer_first: bool) -> list[HubReport]:
     return sorted(reports, key=lambda report: report.focus_score(hazards), reverse=not safer_first)
-
-
-METRIC_HAZARD = {
-    "snowfall_day_pct": "winter",
-    "freeze_day_pct": "winter",
-    "heat_day_pct": "heat",
-    "extreme_heat_day_pct": "heat",
-    "heavy_rain_day_pct": "flood",
-    "very_heavy_rain_day_pct": "flood",
-}
 
 
 def evidence_block(resolved: ResolvedIntent, reports: list[HubReport]) -> dict:
@@ -152,8 +129,6 @@ def evidence_block(resolved: ResolvedIntent, reports: list[HubReport]) -> dict:
         "unsupported_window": _asks_unsupported_window(resolved),
         "required_notice": _window_notice(resolved),
         "lock_breakdown": resolved.detail in {"breakdown", "evidence"} and resolved.intent != "metric_lookup",
-        "required_driver_phrase": _required_driver_phrase(resolved, subject) if (subject := _subject_report(resolved, ordered)) else "",
-        "driver_score_traps": _driver_score_traps(subject, resolved) if subject and resolved.intent != "metric_lookup" else [],
     }
 
 
@@ -175,7 +150,7 @@ def apply_model_prose(
         notice = str((evidence or {}).get("required_notice") or "")
         if notice and notice not in cleaned:
             cleaned = f"{notice} {cleaned}".strip()
-        reason = _draft_rejection(cleaned, evidence, base.scores, base.answer)
+        reason = _draft_rejection(cleaned, evidence, base.answer)
         if reason:
             logger.warning("draft rejected: %s | draft: %s", reason, cleaned[:240].replace("\n", " "))
             drafted = None
@@ -193,7 +168,6 @@ def apply_model_prose(
                     "assumptions": _unique(assumptions),
                     "uncertainties": _unique(uncertainties),
                     "fallback": bool(failure_note),
-                    "rejection_reason": failure_note,
                 }
             ),
             evidence,
@@ -394,60 +368,7 @@ def _scored_reports(resolved: ResolvedIntent, reports: list[HubReport]) -> list[
     return reports[:1]
 
 
-def _behind_clause(resolved: ResolvedIntent, reports: list[HubReport], seen: set[str], word: str) -> str:
-    lead = _n(_rank_score(resolved, reports[0]))
-    parts = []
-    for other in reports[1:3]:
-        if _n(_rank_score(resolved, other)) == lead:
-            continue
-        drivers = _driver_words(other, resolved.hazards or ["overall"], resolved.excluded_hazards, limit=2)
-        name = _mention(other, seen)
-        if drivers:
-            parts.append(f"{name} is {word}, driven by {drivers}")
-        else:
-            parts.append(f"{name} is {word}")
-    if not parts:
-        return ""
-    return " ".join(f"{part}." for part in parts)
 
-
-def _lead_fact(report: HubReport, hazards: list[str], peers: list[HubReport]) -> str:
-    for driver in _ranked_drivers(report, hazards or ["overall"]):
-        counted = _count_fact(report, driver.metric_name, peers)
-        if counted:
-            return counted
-        if driver.metric_name.endswith("_baseline_score"):
-            label = _short_driver(driver).removeprefix("the ")
-            return f"The main reason is {label}."
-        if driver.metric_name.endswith("_alert_score"):
-            if report.active_events:
-                return f"The main reason is active alerts: {_join(report.active_events)}."
-            return "The main reason is the alert history for this hazard."
-    return ""
-
-
-def _count_fact(report: HubReport, metric_name: str, peers: list[HubReport]) -> str:
-    spec = {
-        "freeze_days_pct": ("freeze_days", "freeze_valid_days", "freezing days"),
-        "snow_days_pct": ("snow_days", "snow_valid_days", "snow days"),
-        "extreme_heat_days_pct": ("extreme_heat_days", "temp_max_valid_days", "extreme heat days"),
-        "heat_days_pct": ("heat_days", "temp_max_valid_days", "days reaching 95 F"),
-        "heavy_rain_days_pct": ("heavy_rain_days", "precip_valid_days", "heavy-rain days"),
-        "very_heavy_rain_days_pct": ("very_heavy_rain_days", "precip_valid_days", "very-heavy-rain days"),
-        "high_wind_days_pct": ("high_wind_days", "wind_valid_days", "high-wind days"),
-    }
-    if metric_name not in spec:
-        return ""
-    count_name, valid_name, noun = spec[metric_name]
-    count = int(getattr(report.metrics, count_name) or 0)
-    valid = int(getattr(report.metrics, valid_name) or 0)
-    year = "2025" if str(report.window_start).startswith("2025") or "2025" in report.window_label else report.window_label
-    text = f"In {year} {report.name} had {count} {noun}"
-    if valid and metric_name == "freeze_days_pct" and count / valid >= 1 / 3:
-        text += ", more than a third of the year"
-    if peers and all(count >= int(getattr(other.metrics, count_name) or 0) for other in peers):
-        text += ", the most of all 10 hubs" if len(peers) == 10 else ", the most in this set" if len(peers) > 1 else ""
-    return text + "."
 
 
 def _primary_pair(reports: list[HubReport], focus: list[str], safer: bool) -> tuple[float, str, HubReport, HubReport]:
@@ -570,7 +491,7 @@ def _count_clause(report: HubReport, metric_name: str, peers: list[HubReport]) -
         return ""
     count_name, noun = spec
     count = int(getattr(report.metrics, count_name) or 0)
-    year = "2025" if str(report.window_start).startswith("2025") or "2025" in report.window_label else report.window_label
+    year = _period(report)
     text = f"{report.name} had {count} {noun} in {year}"
     if peers and len(peers) > 1 and all(count >= int(getattr(other.metrics, count_name) or 0) for other in peers):
         text += ", the most of all hubs" if len(peers) >= 10 else ", the most in this set"
@@ -826,6 +747,10 @@ def _uncertainties(resolved: ResolvedIntent, reports: list[HubReport]) -> list[s
 
 
 def _source_items(reports: list[HubReport]) -> list[SourceItem]:
+    return _source_items_from([source for report in reports for source in report.sources])
+
+
+def _source_items_from(sources: list[SourceRef]) -> list[SourceItem]:
     return [
         SourceItem(
             name=source.name,
@@ -833,18 +758,17 @@ def _source_items(reports: list[HubReport]) -> list[SourceItem]:
             retrieved_at=source.retrieved_at,
             uncertainty_note=source.uncertainty_note,
         )
-        for source in _merge_sources(reports)
+        for source in _latest_sources(sources)
     ]
 
 
-def _merge_sources(reports: list[HubReport]) -> list[SourceRef]:
+def _latest_sources(sources: list[SourceRef]) -> list[SourceRef]:
     best: dict[tuple[str, str], SourceRef] = {}
-    for report in reports:
-        for source in report.sources:
-            key = (source.name, source.source_type)
-            current = best.get(key)
-            if current is None or source.retrieved_at > current.retrieved_at:
-                best[key] = source
+    for source in sources:
+        key = (source.name, source.source_type)
+        current = best.get(key)
+        if current is None or source.retrieved_at > current.retrieved_at:
+            best[key] = source
     return list(best.values())
 
 
@@ -887,16 +811,6 @@ def _top_driver(report: HubReport, hazards: list[str]):
         return None
     return max(pool, key=lambda driver: driver.contribution)
 
-
-def _climate_gap(report: HubReport) -> str | None:
-    snow = report.metrics.snow_days_pct
-    baseline = next((driver for driver in report.hazards["winter"].drivers if driver.metric_name == "winter_baseline_score"), None)
-    if baseline and baseline.value is not None and baseline.value >= 80 and snow is not None and snow < 8:
-        return (
-            f"The FEMA winter baseline for {report.name} is {baseline.value:.0f}, but only {snow:.1f}% of days had snowfall, "
-            "so the winter score stays well below that baseline."
-        )
-    return None
 
 
 def _focus_label(hazards: list[str]) -> str:
@@ -963,22 +877,6 @@ DRIVER_PLAIN = {
 }
 
 
-def _compose(resolved: ResolvedIntent, reports: list[HubReport], direct: str, why: str) -> str:
-    scope = _scope_sentence(resolved, reports)
-    assumption = "" if resolved.intent == "metric_lookup" else _assumption_sentence(resolved, reports)
-    uncertainty = _uncertainty_sentence(resolved, reports)
-    sources = _compact_sources(reports, inherited=resolved.inherited)
-    notice = _window_notice(resolved)
-    if resolved.detail == "sources":
-        parts = [notice, sources, direct, uncertainty]
-    elif resolved.detail == "assumptions":
-        parts = [notice, assumption, uncertainty, direct]
-    elif resolved.detail in {"methodology", "evidence"}:
-        parts = [notice, direct, why, assumption, uncertainty]
-    else:
-        parts = [notice, direct, why, assumption, uncertainty, sources]
-    return " ".join(part.strip() for part in parts if part and part.strip())
-
 
 def _place(report: HubReport) -> str:
     return report.name
@@ -991,7 +889,27 @@ def _mention(report: HubReport, seen: set[str]) -> str:
     return _place(report)
 
 
-WINDOW_NOTICE = "Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025."
+NOTICE_PREFIX = "Only calendar year "
+CALENDAR_YEAR = "calendar year "
+
+
+def _window_name(label: str) -> str:
+    """The window as a phrase: 'calendar year 2025', 'the last 365 days', or the winter label."""
+    return "the last 365 days" if "trailing 365" in label else label
+
+
+def _period(report: HubReport) -> str:
+    """The window after 'in': '2025' for a calendar year, otherwise the phrase from _window_name."""
+    return _window_name(report.window_label).removeprefix(CALENDAR_YEAR)
+
+
+def window_notice(window_key: str | None) -> str:
+    label = resolve_window(window_key)[3]
+    return f"{NOTICE_PREFIX}{last_calendar_year()} and the last 365 days are supported, so this is for {_window_name(label)}."
+
+
+def _today() -> str:
+    return date.today().isoformat()
 
 _UNSUPPORTED_WINDOW_WORD = re.compile(
     r"\b(january|february|march|april|june|july|august|september|october|november|december|"
@@ -1009,14 +927,14 @@ def _asks_unsupported_window(resolved: ResolvedIntent) -> bool:
 def _window_notice(resolved: ResolvedIntent) -> str:
     if not _asks_unsupported_window(resolved):
         return ""
-    return WINDOW_NOTICE
+    return window_notice(resolved.time_window)
 
 
 def _source_line(resolved: ResolvedIntent, reports: list[HubReport]) -> str:
-    label = reports[0].window_label.lower() if reports else ""
-    trailing = resolved.time_window == "trailing_365" or "trailing 365" in label
     weather = "offline stand-in for Open-Meteo" if any(report.weather_fallback for report in reports) else "Open-Meteo"
-    window = "trailing 365 days" if trailing else "2025 weather"
+    label = reports[0].window_label if reports else resolve_window(resolved.time_window)[3]
+    name = _window_name(label)
+    window = f"{name.removeprefix(CALENDAR_YEAR)} weather" if label.startswith(CALENDAR_YEAR) else f"weather for {name}"
     if resolved.intent == "metric_lookup":
         return f"Sources: {weather} {window}."
     return f"Sources: {weather} {window}, FEMA NRI, NWS alerts."
@@ -1131,13 +1049,6 @@ def _detail_hubs(resolved: ResolvedIntent, reports: list[HubReport]) -> list[dic
     return hubs
 
 
-def _hub_count(evidence: dict | None, scores: list[ScoreItem]) -> int:
-    ids = {item.hub_id for item in scores}
-    for row in (evidence or {}).get("rankings") or []:
-        if row.get("hub_id"):
-            ids.add(row["hub_id"])
-    return max(1, len(ids))
-
 
 def _order_for(resolved: ResolvedIntent, reports: list[HubReport]) -> list[HubReport]:
     if resolved.excluded_hazards:
@@ -1181,19 +1092,6 @@ def _renorm_sentence(excluded: list[str], total: float, parts: list[tuple[str, f
         f"Contributors, largest first: {_join(bits)}. These points sum to {_n(total)}."
     )
 
-
-def _rank_verdict(resolved: ResolvedIntent, leader: HubReport, seen: set[str]) -> str:
-    score = _n(_rank_score(resolved, leader))
-    name = _mention(leader, seen)
-    if resolved.excluded_hazards:
-        dropped = _join([HAZARD_LABEL[hazard] for hazard in resolved.excluded_hazards])
-        word = "least" if resolved.safety_framing else "most"
-        return f"{name} is the {word} exposed after removing {dropped}, at {score}."
-    if resolved.safety_framing:
-        return f"{name} has the lowest {_focus_label(resolved.hazards)} score, at {score}."
-    if not resolved.hazards:
-        return f"{name} has the highest overall disruption score, at {score}."
-    return f"{name} is the most exposed to {_focus_label(resolved.hazards)}, at {score}."
 
 
 def _compare_verdict(reports: list[HubReport], focus: list[str], seen: set[str], safer: bool) -> tuple[str, list[str]]:
@@ -1272,58 +1170,44 @@ def _short_separator(reports: list[HubReport], hazards: list[str]) -> str:
     return ""
 
 
-def _best_separator(reports: list[HubReport], hazards: list[str], seen: set[str]) -> str:
-    if len(reports) < 2:
-        return ""
-    best = None
-    for hazard in hazards:
-        for name in OBSERVED_METRICS.get(hazard, ()):
-            left = _find_driver(reports[0], hazard, name)
-            right = _find_driver(reports[1], hazard, name)
-            if left is None or right is None:
-                continue
-            gap = abs((left.value or 0) - (right.value or 0))
-            if best is None or gap > best[0]:
-                best = (gap, left, right, reports[0], reports[1])
-    if best is None or best[0] == 0:
-        return ""
-    _gap, left, right, left_hub, right_hub = best
-    return (
-        f"What separates them is {_short_driver(left)}: {_mention(left_hub, seen)} {_driver_value(left)} "
-        f"versus {_mention(right_hub, seen)} {_driver_value(right)}."
-    )
 
-
-def _alert_implications(reports: list[HubReport]) -> str:
+def _alert_implications(items: list[HubAlerts]) -> str:
     bits = []
-    for report in reports:
-        for event in report.active_events[:1]:
+    for item in items:
+        for event in item.batch.events[:1]:
             match = re.match(r"(.+) \(([^)]+)\)$", event)
             if match:
                 shown = f"a {match.group(2).lower()} {match.group(1)}"
             else:
                 shown = event
-            bits.append(f"{report.name} has {shown} active now — short-term, not reflected in the annual score.")
+            bits.append(f"{item.name} has {shown} active now — short-term, not reflected in the annual score.")
     return " ".join(bits[:2])
 
 
-def _alerts_answer(reports: list[HubReport]) -> AnswerResult:
-    active = [report for report in reports if report.active_events]
-    quiet = [report for report in reports if not report.active_events]
-    if not active:
-        text = "No active NWS alerts."
-    else:
-        lines = [_alert_implications(active)]
+def alerts_answer(items: list[HubAlerts]) -> AnswerResult:
+    """Active alerts for the hubs asked about. No weather history is loaded or scored."""
+    loaded = [item for item in items if item.batch.available]
+    active = [item for item in loaded if item.batch.events]
+    quiet = [item for item in loaded if not item.batch.events]
+    failed = [item.name for item in items if not item.batch.available]
+    parts = []
+    if active:
+        parts.append(_alert_implications(active))
         if quiet:
-            lines.append("No active alerts for the other hubs.")
-        text = " ".join(part for part in lines if part)
+            parts.append("No active alerts for the other hubs.")
+    elif loaded:
+        scope = f" for {_join([item.name for item in loaded])}" if len(loaded) <= 3 else ""
+        parts.append(f"No active NWS alerts{scope}.")
+    if failed:
+        parts.append(f"NWS alerts could not be loaded for {_join(failed)}.")
+    text = " ".join(parts)
     text += " Uncertainty: NWS shows only alerts active now, not a history for the year. Sources: NWS active alerts."
     return AnswerResult(
         answer=text,
-        key_findings=[f"{report.name}: {', '.join(report.active_events) or 'none'}" for report in reports[:6]],
+        key_findings=[f"{item.name}: {', '.join(item.batch.events) or 'none'}" for item in items[:6]],
         assumptions=["Active alerts are a current snapshot and are not part of the annual score."],
         uncertainties=["National Weather Service alerts are only the alerts active now."],
-        sources=_source_items(reports),
+        sources=_source_items_from([item.batch.source for item in items]),
         follow_up_questions=[
             "Want the full score breakdown?",
             "Which hub is most exposed to flooding?",
@@ -1331,6 +1215,18 @@ def _alerts_answer(reports: list[HubReport]) -> AnswerResult:
         ],
     )
 
+
+def unavailable_answer(names: list[str]) -> AnswerResult:
+    return AnswerResult(
+        answer=f"Live weather data is unavailable right now for {_join(names)}, so no score was calculated. Please try again shortly.",
+        uncertainties=["Open-Meteo could not be reached, and no stand-in numbers are used for live answers."],
+        follow_up_questions=list(EXAMPLES),
+    )
+
+
+def unavailable_notice(names: list[str]) -> str:
+    verb = "was" if len(names) == 1 else "were"
+    return f"Live weather {verb} unavailable for {_join(names)}, so {'it is' if len(names) == 1 else 'they are'} left out of this result."
 
 def canned_answer(resolved: ResolvedIntent) -> AnswerResult:
     examples = " ".join(f"'{item}'" for item in EXAMPLES)
@@ -1346,12 +1242,13 @@ def canned_answer(resolved: ResolvedIntent) -> AnswerResult:
             answer=f"I only cover weather-disruption risk for the 10 hubs. Try: {examples}",
             follow_up_questions=list(EXAMPLES),
         )
+    fema_retrieved = str(snapshot_meta().get("retrieved_at") or "unknown")
     text = (
-        "Scores use calendar year 2025 unless you ask for a trailing 365 days. "
+        f"Scores use calendar year {last_calendar_year()} unless you ask for the last 365 days. "
         "Fixed overall weights are winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, and heat 0.10. "
         "A missing input is dropped and the remaining weights are renormalized. A snow day is daily snowfall >= 1 cm. "
         "The score is a 0-100 index, not a probability. "
-        "Weather and FEMA inputs were retrieved 2026-11-23. "
+        f"Weather is pulled from Open-Meteo when a question needs it, and the FEMA snapshot was retrieved {fema_retrieved}. "
         "Uncertainty: weather days are a single year, NWS shows only alerts active now, and FEMA is a static county snapshot. "
         "Sources: Open-Meteo archive, NWS active alerts, and the FEMA National Risk Index snapshot."
     )
@@ -1359,7 +1256,7 @@ def canned_answer(resolved: ResolvedIntent) -> AnswerResult:
         answer=text,
         assumptions=[
             "Answers are in English only.",
-            "Supported windows are calendar year 2025 and a trailing 365 days.",
+            f"Supported windows are calendar year {last_calendar_year()} and the last 365 days.",
             "Overall weights are fixed: winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, heat 0.10.",
         ],
         uncertainties=["Weather days are a single year, NWS alerts are only those active now, and FEMA is a static snapshot."],
@@ -1367,7 +1264,7 @@ def canned_answer(resolved: ResolvedIntent) -> AnswerResult:
             SourceItem(
                 name="Open-Meteo archive, NWS active alerts, and the FEMA National Risk Index snapshot",
                 source_type="static_public_dataset",
-                retrieved_at="2026-11-23",
+                retrieved_at=fema_retrieved,
                 uncertainty_note="Methodology summary. Live answers still cite the source used for that hub.",
             )
         ],
@@ -1484,133 +1381,11 @@ def _find_driver(report: HubReport, hazard: str, name: str):
     return None
 
 
-def _driver_value(driver) -> str:
-    if driver.value is None:
-        return "n/a"
-    if str(driver.metric_name).endswith("_pct"):
-        return f"{_n(driver.value)}%"
-    return _n(driver.value)
 
 
-def _baseline_sentence(left: HubReport, right: HubReport, hazard: str) -> str:
-    metric = BASELINE_METRIC.get(hazard)
-    if metric is None:
-        return ""
-    own = _find_driver(left, hazard, metric)
-    other = _find_driver(right, hazard, metric)
-    if own is None or other is None or own.value is None or other.value is None:
-        return ""
-    label = HAZARD_LABEL[hazard]
-    if abs(own.value - other.value) <= 1.0:
-        return (
-            f"The FEMA {label} baseline does not separate them: {_place(left)} is {_n(own.value)} "
-            f"({_n(own.contribution)} points) and {_place(right)} is {_n(other.value)} ({_n(other.contribution)} points)."
-        )
-    return (
-        f"{_place(left)} FEMA {label} baseline is {_n(own.value)} ({_n(own.contribution)} points) and "
-        f"{_place(right)} FEMA {label} baseline is {_n(other.value)} ({_n(other.contribution)} points)."
-    )
 
 
-def _separator_sentence(left: HubReport, right: HubReport, hazard: str) -> str:
-    best = None
-    for name in OBSERVED_METRICS.get(hazard, ()):
-        own = _find_driver(left, hazard, name)
-        other = _find_driver(right, hazard, name)
-        if own is None or other is None:
-            continue
-        gap = abs((own.value or 0) - (other.value or 0))
-        if best is None or gap > best[0]:
-            best = (gap, own, other)
-    if best and best[0] > 0:
-        _gap, own, other = best
-        return (
-            f"What separates them is {_short_driver(own)}: {_place(left)} {_driver_value(own)} "
-            f"({_n(own.contribution)} points) versus {_place(right)} {_driver_value(other)} ({_n(other.contribution)} points)."
-        )
-    if left.active_events or right.active_events:
-        left_alerts = ", ".join(left.active_events) or "none"
-        right_alerts = ", ".join(right.active_events) or "none"
-        return f"Active NWS alerts: {_place(left)} {left_alerts}; {_place(right)} {right_alerts}."
-    return ""
 
-
-def _hub_line(leader: HubReport, other: HubReport, hazards: list[str], seen: set[str], resolved: ResolvedIntent) -> str:
-    score = _n(_rank_score(resolved, other))
-    name = _mention(other, seen)
-    lead_score = _n(_rank_score(resolved, leader))
-    if score == lead_score:
-        return f"{name} is effectively tied with {_mention(leader, seen)} at {score}."
-    driver = _driver_words(other, hazards or ["overall"], resolved.excluded_hazards, limit=2)
-    if resolved.safety_framing:
-        lead = _mention(leader, seen)
-        if driver:
-            return f"{name} is riskier than {lead} at {score}, mainly on {driver}."
-        return f"{name} is riskier than {lead} at {score}."
-    if driver:
-        return f"{name} is lower at {score}, mainly on {driver}."
-    return f"{name} is lower at {score}."
-
-
-def _reason_driver(leader: HubReport, other: HubReport, hazards: list[str], resolved: ResolvedIntent) -> str:
-    if resolved.excluded_hazards:
-        _leader_total, leader_parts = _renormalized(leader, resolved.excluded_hazards)
-        _other_total, other_parts = _renormalized(other, resolved.excluded_hazards)
-        leader_map = {name: contribution for name, _score, contribution in leader_parts}
-        other_map = {name: contribution for name, _score, contribution in other_parts}
-        best = None
-        for name, left in leader_map.items():
-            right = other_map.get(name, 0.0)
-            gap = right - left if resolved.safety_framing else left - right
-            if best is None or gap > best[0]:
-                best = (gap, HAZARD_LABEL[name])
-        if best and best[0] > 0.05:
-            return best[1]
-        return ""
-    leader_drivers = {driver.metric_name: driver for driver in _ranked_drivers(leader, hazards or ["overall"])}
-    other_drivers = {driver.metric_name: driver for driver in _ranked_drivers(other, hazards or ["overall"])}
-    best_driver = None
-    for metric_name, left in leader_drivers.items():
-        if metric_name in HURRICANE_DRIVERS and not leader.hurricane_published and "hurricane" not in hazards:
-            continue
-        right = other_drivers.get(metric_name)
-        if right is None:
-            continue
-        gap = right.contribution - left.contribution if resolved.safety_framing else left.contribution - right.contribution
-        if best_driver is None or gap > best_driver[0]:
-            best_driver = (gap, _short_driver(right if resolved.safety_framing else left))
-    if best_driver and best_driver[0] > 0.05:
-        return best_driver[1]
-    return ""
-
-
-def _driver_words(report: HubReport, hazards: list[str], excluded: list[str] | None = None, limit: int = 2) -> str:
-    if excluded:
-        _total, parts = _renormalized(report, excluded)
-        names = [HAZARD_LABEL[name] for name, _score, _contribution in parts if name not in excluded]
-        return _join(names[:limit])
-    names = []
-    for driver in _ranked_drivers(report, hazards):
-        if driver.metric_name in HURRICANE_DRIVERS and not report.hurricane_published and "hurricane" not in hazards:
-            continue
-        names.append(_short_driver(driver))
-        if len(names) >= limit:
-            break
-    return _join(names)
-
-
-def _driver_point_phrase(
-    report: HubReport,
-    hazards: list[str],
-    total: float,
-    excluded: list[str] | None = None,
-    limit: int = 2,
-) -> str:
-    labels, _scores, shown, total = _contribution_rows(report, hazards, total, excluded or [])
-    bits = [f"{label} ({points:.1f})" for label, points in list(zip(labels, shown))[:limit]]
-    if not bits:
-        return ""
-    return f"mainly {_join(bits)} of {_n(total)}"
 
 
 def _contribution_rows(
@@ -1651,36 +1426,7 @@ def _contribution_rows(
     )
 
 
-def _subject_report(resolved: ResolvedIntent, ordered: list[HubReport]) -> HubReport | None:
-    if not ordered:
-        return None
-    if resolved.explain_gap and len(resolved.hub_ids) > 1:
-        for report in ordered:
-            if report.hub_id == resolved.hub_ids[1]:
-                return report
-    return ordered[0]
 
-
-def _required_driver_phrase(resolved: ResolvedIntent, report: HubReport) -> str:
-    if resolved.intent != "explain_hub" or resolved.explain_gap:
-        return ""
-    if not re.search(r"\bwhy\b", resolved.question or "", re.I):
-        return ""
-    total = report.focus_score(resolved.hazards)
-    return _driver_point_phrase(report, resolved.hazards or ["overall"], total, resolved.excluded_hazards)
-
-
-def _driver_score_traps(report: HubReport, resolved: ResolvedIntent) -> list[dict]:
-    total = report.focus_score(resolved.hazards) if resolved.intent == "explain_hub" else _rank_score(resolved, report)
-    labels, scores, shown, _total = _contribution_rows(report, resolved.hazards or ["overall"], total, resolved.excluded_hazards)
-    traps = []
-    for label, score, points in zip(labels, scores, shown):
-        if label not in {"winter", "flood", "hurricane", "heat", "severe storm"} or score is None:
-            continue
-        if abs(float(score) - points) <= 0.2:
-            continue
-        traps.append({"name": label, "score": round(float(score), 1), "points": points})
-    return traps
 
 
 def _gap_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> AnswerResult:
@@ -1917,7 +1663,7 @@ def _follow_count(report: HubReport, resolved: ResolvedIntent) -> str:
     metrics = [preferred[hazard] for hazard in resolved.hazards if hazard in preferred]
     if not metrics:
         metrics = list(preferred.values())
-    year = "2025" if str(report.window_start).startswith("2025") or "2025" in report.window_label else report.window_label
+    year = _period(report)
     for metric in metrics:
         spec = _COUNT_FIELDS.get(metric)
         if spec is None:
@@ -1963,7 +1709,7 @@ def _two_count_sentence(leader: HubReport, other: HubReport, metric_name: str) -
     if spec is None:
         return ""
     count_name, noun = spec
-    year = "2025" if str(leader.window_start).startswith("2025") or "2025" in leader.window_label else leader.window_label
+    year = _period(leader)
     left = int(getattr(leader.metrics, count_name) or 0)
     right = int(getattr(other.metrics, count_name) or 0)
     return f"{leader.name} had {left} {noun} in {year} and {other.name} had {right}."
@@ -2085,12 +1831,6 @@ def _filter_followups(resolved: ResolvedIntent, reports: list[HubReport], questi
     return kept
 
 
-def _why_sentence(report: HubReport, hazards: list[str], subject: str = "The score", limit: int = 3) -> str:
-    drivers = _ranked_drivers(report, hazards)[:limit]
-    if not drivers:
-        return ""
-    return f"{subject} is led by {_join([_driver_phrase(driver) for driver in drivers])}."
-
 
 def _investment_sentence(report: HubReport) -> str:
     """One or two suggestions from the largest overall drivers. No costs and no new numbers."""
@@ -2131,16 +1871,6 @@ def _ranked_drivers(report: HubReport, hazards: list[str]):
     return sorted(pool, key=lambda driver: driver.contribution, reverse=True)
 
 
-def _driver_phrase(driver) -> str:
-    name = DRIVER_PLAIN.get(driver.metric_name, driver.metric_name.replace("_", " "))
-    if driver.value is None:
-        return f"{name} ({_n(driver.contribution)} points)"
-    if str(driver.metric_name).endswith("_pct"):
-        shown = f"{_n(driver.value)}%"
-    else:
-        shown = _n(driver.value)
-    return f"{name} at {shown} ({_n(driver.contribution)} points)"
-
 
 def _scope_sentence(resolved: ResolvedIntent, reports: list[HubReport]) -> str:
     window = reports[0].window_label
@@ -2158,111 +1888,12 @@ def _scope_sentence(resolved: ResolvedIntent, reports: list[HubReport]) -> str:
     return f"Scope: {place}; {_join(areas)}; {topic}; {window}."
 
 
-def _assumption_sentence(resolved: ResolvedIntent, reports: list[HubReport]) -> str:
-    focus = set(resolved.hazards)
-    if resolved.intent == "metric_lookup" and resolved.metric:
-        focus.add(METRIC_HAZARD.get(resolved.metric, ""))
-        focus.discard("")
-    definition = _definition(focus)
-    if resolved.inherited and resolved.detail is None:
-        return f"Same rules as the previous turn. {definition} The score is a 0-100 index, not a probability."
-    return f"{definition} The score is a 0-100 index, not a probability."
 
 
-def _definition(focus: set[str]) -> str:
-    bits = []
-    if "winter" in focus:
-        bits.append("a snow day is daily snowfall >= 1 cm and a freeze day has a low of 32 F or below")
-    if "flood" in focus:
-        bits.append("heavy rain is at least 1 inch in a day, and the flood baseline uses the higher of the inland and coastal FEMA scores")
-    if "hurricane" in focus:
-        bits.append("the hurricane coastal modifier is 100 only for Miami, Houston, and New York/Newark")
-    if "heat" in focus:
-        bits.append("a heat day reaches at least 95 F and an extreme heat day reaches at least 100 F")
-    if "severe_storm" in focus:
-        bits.append("the severe-storm baseline averages the FEMA tornado, lightning, hail, and strong-wind scores")
-    if not bits:
-        return "Weather-day rates use the stated window."
-    return " ".join(bit[0].upper() + bit[1:] + "." for bit in bits)
 
 
-def _uncertainty_sentence(resolved: ResolvedIntent, reports: list[HubReport]) -> str:
-    window = reports[0].window_label if reports else "the selected year"
-    if resolved.intent == "metric_lookup":
-        text = f"Uncertainty: this count is only {window}, one year of reanalysis, not a climate normal or a station log."
-    else:
-        text = (
-            f"Uncertainty: weather days are a single year ({window}), NWS shows only alerts active now, "
-            "and FEMA is a static county snapshot rather than a live forecast."
-        )
-    if any(report.weather_fallback for report in reports):
-        return "Uncertainty: live historical weather was unavailable, so these day counts are an offline stand-in for one year, not a climate normal."
-    return text
 
 
-def _compact_sources(reports: list[HubReport], inherited: bool = False) -> str:
-    weather = "an offline climatology stand-in" if any(report.weather_fallback for report in reports) else "Open-Meteo archive"
-    lead = "Sources, same as the previous turn" if inherited else "Sources"
-    return f"{lead}: {weather}, NWS active alerts, and the FEMA National Risk Index snapshot."
-
-
-_INTERNAL_LABELS = (
-    "freeze-day rate",
-    "snow-day rate",
-    "high-wind rate",
-    "heavy-rain rate",
-    "very-heavy-rain rate",
-    "95 f day rate",
-    "100 f day rate",
-    "fema winter baseline",
-    "fema flood baseline",
-    "fema hurricane baseline",
-    "fema heat baseline",
-    "fema severe-storm baseline",
-    "severe-storm baseline",
-    "coastal surge flag",
-)
-
-
-def _internal_label_problem(text: str, skeleton: str, evidence: dict | None) -> str | None:
-    """Default answers stay in plain language. A requested breakdown may use the technical names."""
-    if (evidence or {}).get("lock_breakdown"):
-        return None
-    spoken = text.split("Contributors, largest first", 1)[0].lower()
-    allowed = (skeleton or "").lower()
-    for label in _INTERNAL_LABELS:
-        if label in spoken and label not in allowed:
-            return f"internal label {label}"
-    return None
-
-
-_OVERCLAIMS = (
-    "significant portion",
-    "significant share",
-    "large portion of the year",
-    "more significantly",
-    "contributes more significantly",
-)
-
-
-def _answer_shape_problem(text: str, skeleton: str, evidence: dict | None) -> str | None:
-    """Reject a changed claim. Sentence order, the legend, and source wording are not claims."""
-    del evidence
-    if not (skeleton or "").strip():
-        return None
-    spoken = text.split("Contributors, largest first", 1)[0]
-    allowed = skeleton.lower()
-    low = spoken.lower()
-    for phrase in _OVERCLAIMS:
-        if phrase in low and phrase not in allowed:
-            return f"overclaim {phrase}"
-    if "most exposed" in low and "most exposed" not in allowed:
-        return "calls a hub most exposed"
-    if _scores_clause(skeleton) is None and _scores_clause(spoken) is not None:
-        clause = _scores_clause(spoken) or ""
-        if not re.search(r"\d", clause):
-            return "empty scores line"
-    return None
 
 
 def _scores_clause(text: str) -> str | None:
@@ -2276,27 +1907,7 @@ def _before_scores(text: str) -> str:
     return text.split("Scores:", 1)[0]
 
 
-def _score_tokens(clause: str) -> list[tuple[str, str]]:
-    body = re.sub(r"\(higher = more exposed\)", "", clause, flags=re.I).strip().rstrip(".")
-    tokens = []
-    for piece in body.split(","):
-        match = re.search(r"(.+?)\s+(\d+(?:\.\d+)?)\s*$", piece.strip())
-        if match:
-            tokens.append((" ".join(match.group(1).lower().split()), match.group(2)))
-    return tokens
 
-
-def _numbers_in(text: str) -> set[float]:
-    return {float(raw) for raw in re.findall(r"\d+(?:\.\d+)?", text or "")}
-
-
-def _ranking_score_numbers(evidence: dict | None) -> set[float]:
-    found: set[float] = set()
-    for row in (evidence or {}).get("rankings") or []:
-        for key in ("focus_score", "overall_score"):
-            if row.get(key) is not None:
-                found.add(round(float(row[key]), 1))
-    return found
 
 
 def _normalize_apostrophes(text: str) -> str:
@@ -2336,7 +1947,7 @@ def _prepare_draft(text: str, skeleton: str) -> str:
     """Keep one skeleton Scores line and one Sources line. Do not cut numbers out of the reason."""
     cleaned = _unescape_breaks(_normalize_apostrophes((text or "").strip()))
     cleaned = _strip_hub_region_labels(cleaned)
-    if WINDOW_NOTICE in (skeleton or ""):
+    if NOTICE_PREFIX in (skeleton or ""):
         cleaned = _strip_unsupported_window_words(cleaned)
     cleaned = _append_skeleton_closers(_strip_model_closers(cleaned), skeleton)
     cleaned = _drop_legend_from_reason(cleaned, skeleton)
@@ -2360,7 +1971,7 @@ def _join_scores(body: str, tail: str) -> str:
 
 
 def _strip_unsupported_window_words(text: str) -> str:
-    """Yearly figures stay on calendar year 2025. A month name would reject the draft."""
+    """Yearly figures stay on the resolved window. A month name would reject the draft."""
     cleaned = _UNSUPPORTED_WINDOW_WORD.sub("", text or "")
     cleaned = re.sub(r"\b(?:in|during|for)\s+(?=[.,;]|$)", "", cleaned, flags=re.I)
     cleaned = re.sub(r"\s{2,}", " ", cleaned)
@@ -2606,7 +2217,7 @@ def _fact_numbers(text: str) -> list[float]:
     found = []
     for raw in re.findall(r"\d+(?:\.\d+)?", _visible_numbers(text)):
         value = float(raw)
-        if value in {0, 1, 2, 3, 4, 5, 10, 32, 40, 95, 100, 365} or 2020 <= value <= 2027:
+        if value in {0, 1, 2, 3, 4, 5, 10, 32, 40, 95, 100, 365} or value in window_years():
             continue
         found.append(value)
     return found
@@ -2624,9 +2235,6 @@ def _unmatched_numbers(needed: list[float], got: list[float]) -> list[float]:
             missing.append(value)
     return missing
 
-
-def _missing_numbers(needed_text: str, got_text: str) -> bool:
-    return bool(_unmatched_numbers(_fact_numbers(needed_text), _fact_numbers(got_text)))
 
 
 def _name_forms(name: str) -> list[str]:
@@ -2776,135 +2384,21 @@ def _plural_ranking_problem(text: str, skeleton: str) -> str | None:
     return None
 
 
-def _draft_is_usable(text: str, evidence: dict | None, scores: list[ScoreItem], skeleton: str = "") -> bool:
-    return _draft_rejection(text, evidence, scores, skeleton) is None
-
-
-def _draft_rejection(text: str, evidence: dict | None, scores: list[ScoreItem], skeleton: str = "") -> str | None:
+def _draft_rejection(text: str, evidence: dict | None, skeleton: str) -> str | None:
+    """Why a model draft cannot replace the skeleton, or None when it can."""
     notice = str((evidence or {}).get("required_notice") or "")
     if notice and notice not in text:
         return "missing required window notice"
-    if not notice and WINDOW_NOTICE in text:
+    if not notice and NOTICE_PREFIX in text:
         return "window notice was not asked for"
     if (evidence or {}).get("unsupported_window") and _UNSUPPORTED_WINDOW_WORD.search(text):
         return "attributes yearly values to an unsupported window"
-    if (skeleton or "").strip():
-        ranking = _plural_ranking_problem(text, skeleton)
-        if ranking:
-            return ranking
-        return _fact_problem(text, skeleton)
-    label_problem = _internal_label_problem(text, skeleton, evidence)
-    if label_problem:
-        return label_problem
-    shape_problem = _answer_shape_problem(text, skeleton, evidence)
-    if shape_problem:
-        return shape_problem
-    phrase = str((evidence or {}).get("required_driver_phrase") or "")
-    phrase_in_skeleton = bool(phrase) and not _missing_numbers(phrase, skeleton or "")
-    if phrase and (not (skeleton or "").strip() or phrase_in_skeleton) and _missing_numbers(phrase, text):
-        return "why answer omitted the top contributors"
-    if (skeleton or "").strip():
-        fact_problem = _fact_problem(text, skeleton)
-        if fact_problem:
-            return fact_problem
-    clause_problem = _mainly_clause_problem(text, evidence)
-    if clause_problem:
-        return clause_problem
-    for trap in (evidence or {}).get("driver_score_traps") or []:
-        name = re.escape(str(trap.get("name") or ""))
-        if not name:
-            continue
-        for match in re.finditer(rf"\b{name}\b(?:\s+(?!\d)\w+){{0,4}}\s*\(?\s*(\d+(?:\.\d+)?)", text, re.I):
-            value = float(match.group(1))
-            score = float(trap["score"])
-            points = float(trap["points"])
-            if abs(value - score) <= 0.1 + 1e-9 and abs(value - points) > 0.15:
-                return f"driver cites the {trap['name']} hazard score"
-    if evidence is None and not scores:
+    if not (skeleton or "").strip():
         return None
-    allowed: set[float] = set()
-    if evidence is not None:
-        _collect_numbers(evidence, allowed)
-    for item in scores:
-        _collect_numbers(item.model_dump(), allowed)
-    _collect_numbers(_normalize_degree(skeleton), allowed)
-    text = _normalize_degree(text)
-    if not allowed and evidence is None:
-        return None
-    for raw in re.findall(r"\d+(?:\.\d+)?", text):
-        value = float(raw)
-        if value in {0, 1, 2, 3, 4, 5, 10, 32, 40, 95, 100, 365} or 2020 <= value <= 2027:
-            continue
-        if any(abs(value - known) <= 0.1 + 1e-9 for known in allowed):
-            continue
-        return f"number {raw} is not in the evidence"
-    return None
+    return _plural_ranking_problem(text, skeleton) or _fact_problem(text, skeleton)
 
 
-_MAINLY_CLAUSE = re.compile(
-    r"mainly\s+.+?\(([-+]?\d+(?:\.\d+)?)\)\s+and\s+.+?\(([-+]?\d+(?:\.\d+)?)\)\s+of\s+(\d+(?:\.\d+)?)",
-    re.I,
-)
 
-
-def _mainly_clause_problem(text: str, evidence: dict | None) -> str | None:
-    """Parentheses in 'mainly X (a) and Y (b) of TOTAL' are contribution points, and a + b stays within the total."""
-    clauses = list(_MAINLY_CLAUSE.finditer(text))
-    if not clauses:
-        return None
-    breakdown = str((evidence or {}).get("breakdown") or "")
-    arrows = [float(number) for number in re.findall(r"(?:→|:)\s*(-?\d+(?:\.\d+)?)", breakdown)]
-    hazard_scores: list[float] = []
-    for row in (evidence or {}).get("rankings") or []:
-        hazard_scores.extend(float(value) for value in (row.get("hazard_scores") or {}).values())
-        for driver in row.get("drivers") or []:
-            metric = str(driver.get("metric_name") or "")
-            if metric.endswith("_score") and driver.get("value") is not None:
-                hazard_scores.append(float(driver["value"]))
-    for match in clauses:
-        left = float(match.group(1))
-        right = float(match.group(2))
-        total = float(match.group(3))
-        if left - total > 0.05 or right - total > 0.05 or left + right - total > 0.05:
-            return "contributor points exceed the total"
-        for value in (left, right):
-            matches_points = any(abs(value - arrow) <= 0.05 + 1e-9 for arrow in arrows)
-            matches_score = any(abs(value - score) <= 0.1 + 1e-9 for score in hazard_scores)
-            if matches_score and not matches_points:
-                return "mainly clause cites a hazard score"
-            if arrows and not matches_points:
-                return "mainly clause is not a contribution from the breakdown"
-    return None
-
-
-def _collect_numbers(value, found: set[float]) -> None:
-    if isinstance(value, bool) or value is None:
-        return
-    if isinstance(value, (int, float)):
-        found.add(round(float(value), 2))
-        found.add(round(float(value), 1))
-        found.add(float(round(value)))
-        return
-    if isinstance(value, str):
-        for raw in re.findall(r"\d+(?:\.\d+)?", value):
-            number = float(raw)
-            found.add(round(number, 2))
-            found.add(round(number, 1))
-        return
-    if isinstance(value, dict):
-        for item in value.values():
-            _collect_numbers(item, found)
-        return
-    if isinstance(value, list):
-        for item in value:
-            _collect_numbers(item, found)
-
-
-def _source_sentence(sources: list[SourceRef]) -> str:
-    if not sources:
-        return "No sources were attached."
-    bits = [f"{source.name} ({source.source_type}, retrieved {source.retrieved_at})" for source in sources]
-    return "Sources: " + "; ".join(bits) + "."
 
 
 def _name_list(reports: list[HubReport]) -> str:

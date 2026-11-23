@@ -29,14 +29,14 @@ def _blank(value: str | None) -> tuple[float, bool]:
 @lru_cache(maxsize=1)
 def snapshot_meta() -> dict:
     if not META_PATH.exists():
-        return {"retrieved_at": "2026-11-23", "service_url": "", "version_note": SOURCE_NOTE}
+        return {"retrieved_at": "unknown", "service_url": "", "version_note": SOURCE_NOTE}
     return json.loads(META_PATH.read_text(encoding="utf-8"))
 
 
 @lru_cache(maxsize=1)
 def load_baselines() -> dict[str, HazardBaseline]:
     meta = snapshot_meta()
-    retrieved = str(meta.get("retrieved_at") or "2026-11-23")
+    retrieved = str(meta.get("retrieved_at") or "unknown")
     note = SOURCE_NOTE
     version = meta.get("version_note")
     if version:

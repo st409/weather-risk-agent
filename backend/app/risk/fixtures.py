@@ -1,6 +1,6 @@
-"""Deterministic daily climatology used by tests and when a live fetch fails.
+"""Deterministic daily climatology for WEATHER_DATA_MODE=fixture (tests and evals).
 
-This is not an observation record. Callers must label it as a stand-in.
+This is not an observation record. It is never used in live mode.
 """
 
 from __future__ import annotations

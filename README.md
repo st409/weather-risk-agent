@@ -2,15 +2,24 @@
 
 Answers weather-disruption questions for 10 fixed US logistics hubs. Python computes every score. A language model can only parse intent and draft wording, and only when `OPENAI_API_KEY` is set.
 
-The service is live at https://weather-risk-agent-dsev.onrender.com/ on Render's free plan. The first request after 15 idle minutes waits about a minute while the instance wakes.
+Live:
 
-About 4,900 lines of application code, plus about 2,100 lines of tests and evals, and about 1,000 lines of frontend. Counts skip blank lines.
+- Chat UI: https://weather-risk-agent-dsev.onrender.com/
+- API: https://weather-risk-api.onrender.com (health check at `/api/health`)
+
+Both run on Render's free plan. The first request after 15 idle minutes waits about a minute while the instance wakes.
+
+Design notes are in [DESIGN.md](DESIGN.md). The AI-assisted build is indexed in [AI_SESSION.md](AI_SESSION.md).
+
+About 5,200 lines of application code, plus about 3,500 lines of tests and evals, and about 1,400 lines of frontend. Counts skip blank lines.
 
 ## Features
 
 Voice: mic input and optional read-aloud via the browser Web Speech API (Chrome/Edge/Safari).
 
 ## Run
+
+Prerequisites: Python 3.10 or newer, and Node.js with npm (for the frontend).
 
 ```bash
 cd weather-risk-agent
@@ -20,6 +29,10 @@ make setup
 make seed
 make dev
 ```
+
+- `make setup` creates `backend/.venv`, installs the backend, and runs `npm install` in `frontend/`.
+- `make seed` loads the 10 hubs (and their FEMA baselines) into the SQLite database at `backend/data/weather_risk.db`.
+- `make dev` starts the API on port 8000 and the UI on port 5173 together. Ctrl+C stops both.
 
 Open http://127.0.0.1:5173
 
@@ -43,6 +56,8 @@ python scripts/tasks.py dev
 | `NWS_USER_AGENT` | No | Required by the National Weather Service. A default is set. |
 | `DATABASE_PATH` | No | SQLite file. Default `backend/data/weather_risk.db`. |
 | `ALLOWED_ORIGINS` | No | Extra browser origins for CORS, comma-separated. Local dev is always allowed. |
+| `ADMIN_TOKEN` | No | Secret for `POST /api/admin/refresh-scores`, sent as `X-Admin-Token`. Empty means that route returns 404. |
+| `CHAT_RATE_LIMIT_PER_MIN` | No | Per-IP cap on `POST /api/chat`. Default 30. Set to 0 to turn it off. |
 | `VITE_API_URL` | No | Frontend only. API origin in production. Empty in local dev, so Vite proxies `/api`. |
 
 Copy `.env.example` to `.env`. Do not commit `.env`.
@@ -63,8 +78,8 @@ The UI uses `POST /api/chat`. These do not go through the model:
 
 - `GET /api/hubs`
 - `GET /api/hubs/dallas/risk`
-- `GET /api/compare?hub_ids=miami,houston&hazards=hurricane,flood`
-- `POST /api/admin/refresh-scores`
+- `GET /api/compare?hub_ids=miami,houston&hazards=hurricane,flood` ranks those hubs on the mean of the named hazards.
+- `POST /api/admin/refresh-scores` with header `X-Admin-Token`. Chat messages are limited to 500 characters.
 
 ## Tests and evals
 
@@ -89,7 +104,7 @@ make score-once
 
 ## Deploy
 
-The API is live at https://weather-risk-agent-dsev.onrender.com/ on Render. The page can be hosted on Vercel and pointed at that API. No custom domain is required. The free Render service sleeps after 15 minutes without a request, and the next request takes about a minute to wake it.
+The chat UI is live at https://weather-risk-agent-dsev.onrender.com/ and the API at https://weather-risk-api.onrender.com, both on Render. The page can also be hosted on Vercel and pointed at the API. No custom domain is required. The free Render service sleeps after 15 minutes without a request, and the next request takes about a minute to wake it.
 
 ### Render
 
@@ -99,14 +114,15 @@ The API is live at https://weather-risk-agent-dsev.onrender.com/ on Render. The 
 4. Health check path: `/api/health`
 5. Set environment variables:
    - `OPENAI_API_KEY`: your key, if you want the model to draft prose. Leave it empty and answers still come from the scores.
-   - `ALLOWED_ORIGINS`: the Vercel URL, for example `https://weather-risk-agent.vercel.app`. No trailing slash.
+   - `ALLOWED_ORIGINS`: the UI origin, for example `https://weather-risk-agent-dsev.onrender.com` (or the Vercel URL if the page is hosted there). No trailing slash.
 
 `render.yaml` records the same service settings. The committed `backend/data/weather_risk.db` is what the free server starts with. Chat rows written after deploy can disappear when the free instance sleeps or restarts.
 
 ### Vercel
 
 1. Import the GitHub repo. Set the root directory to `frontend`. Framework preset: Vite.
-2. Set `VITE_API_URL` to `https://weather-risk-agent-dsev.onrender.com`. No trailing slash.
-3. Deploy. The site is served at a `*.vercel.app` address.
+2. Set `VITE_API_URL` to the API origin, `https://weather-risk-api.onrender.com`. No trailing slash.
+3. On the API service, set `ALLOWED_ORIGINS` to the UI origin (the `*.vercel.app` URL).
+4. Deploy. The site is served at a `*.vercel.app` address.
 
 Locally, leave `VITE_API_URL` unset. The dev server still proxies `/api` to `http://127.0.0.1:8000`.

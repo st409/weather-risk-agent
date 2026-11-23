@@ -49,6 +49,16 @@ class AlertBatch:
 
 
 @dataclass
+class HubAlerts:
+    """Active alerts for one hub. Used by alert questions, which load no weather history."""
+
+    hub_id: str
+    name: str
+    region: str
+    batch: AlertBatch
+
+
+@dataclass
 class Driver:
     metric_name: str
     value: float | None

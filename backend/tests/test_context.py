@@ -453,3 +453,23 @@ def test_breakdown_after_a_metric_explains_the_hazard():
     assert resolved.detail == "breakdown"
     assert resolved.hazards == ["winter"]
     assert resolved.metric is None
+
+
+def test_punctuation_is_english_and_other_scripts_are_not():
+    curly = _resolve("Denver\u2019s snow days last year, down to 32\u00b0F")
+    assert curly.intent == "metric_lookup"
+    assert curly.hub_ids == ["denver"]
+    accented = _resolve("Compare Miami and Houston on hurricane exposure, caf\u00e9")
+    assert accented.intent != "unsupported_language"
+    hebrew = _resolve("\u05d5\u05de\u05d4 \u05dc\u05d2\u05d1\u05d9 \u05e9\u05d9\u05d8\u05e4\u05d5\u05e0\u05d5\u05ea \u05d1\u05dc\u05d1\u05d3?")
+    assert hebrew.intent == "unsupported_language"
+
+
+def test_alerts_name_the_hub_and_airport_codes_are_uppercase_only():
+    alerts = _resolve("alerts in Chicago")
+    assert alerts.intent == "alerts"
+    assert alerts.hub_ids == ["chicago"]
+    assert _resolve("What about LAX?").hub_ids == ["losangeles"]
+    assert _resolve("what about lax?").hub_ids == []
+    assert _resolve("How is DEN doing?").hub_ids == []
+    assert _resolve("Tell me about LA").hub_ids == []

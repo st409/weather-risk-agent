@@ -21,8 +21,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if command == "score-once":
         seed_reference_data()
-        reports, _key, label, _span = score_selection(None, None, None, force=True)
-        print(f"Window: {label}")
+        selection = score_selection(None, None, None, force=True)
+        reports = selection.reports
+        print(f"Window: {selection.window_label}")
+        if selection.unavailable:
+            print("No live weather, left out: " + ", ".join(selection.unavailable))
         print(f"{'hub':<18}{'overall':>10}{'winter':>10}{'flood':>10}{'hurricane':>12}{'heat':>10}{'severe':>10}  note")
         for report in sorted(reports, key=lambda item: item.overall_score, reverse=True):
             payload = public_report(report)

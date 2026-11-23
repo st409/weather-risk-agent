@@ -38,3 +38,19 @@ def resolve_window(name: str | None, today: date | None = None) -> tuple[date, d
     start, end = date(year, 1, 1), date(year, 12, 31)
     label = f"calendar year {year}"
     return start, end, "last_calendar_year", label
+
+
+WINDOW_KEYS = ("last_calendar_year", "trailing_365", "last_winter")
+
+
+def last_calendar_year(today: date | None = None) -> int:
+    return (today or date.today()).year - 1
+
+
+def window_years(today: date | None = None) -> set[int]:
+    """Every year that appears in some supported window. Drafts may repeat these."""
+    years: set[int] = set()
+    for key in WINDOW_KEYS:
+        start, end, _key, _label = resolve_window(key, today)
+        years.update({start.year, end.year})
+    return years

@@ -10,7 +10,8 @@ import difflib
 import re
 from dataclasses import dataclass, field
 
-from app.risk.hubs import ALIASES, HUB_BY_ID, HUBS, OUTSIDE_PLACES, REGIONS
+from app.risk.hubs import AIRPORT_CODES, ALIASES, HUB_BY_ID, HUBS, OUTSIDE_PLACES, REGIONS
+from app.risk.windows import WINDOW_KEYS
 
 HAZARDS = ("hurricane", "flood", "heat", "severe_storm", "winter")
 METRICS = {
@@ -21,14 +22,14 @@ METRICS = {
     "heavy_rain_day_pct",
     "very_heavy_rain_day_pct",
 }
-WINDOWS = {"last_calendar_year", "trailing_365", "last_winter"}
+WINDOWS = set(WINDOW_KEYS)
 
 _HAZARD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("hurricane", re.compile(r"\b(hurricanes?|tropical(?:\s+storm)?|storm surge)\b|הוריקן", re.I)),
-    ("flood", re.compile(r"\b(floods?|flooding|heavy rain)\b|שיטפונ", re.I)),
-    ("heat", re.compile(r"\b(heat|heatwave|heat wave)\b|חום", re.I)),
-    ("severe_storm", re.compile(r"\b(severe storms?|tornadoes?|thunderstorms?|hail)\b|טורנדו|סופ[הת] קש", re.I)),
-    ("winter", re.compile(r"\b(winter|snowfall|snow|freezing|freeze|blizzard|ice)\b|חורף|שלג", re.I)),
+    ("hurricane", re.compile(r"\b(hurricanes?|tropical(?:\s+storm)?|storm surge)\b", re.I)),
+    ("flood", re.compile(r"\b(floods?|flooding|heavy rain)\b", re.I)),
+    ("heat", re.compile(r"\b(heat|heatwave|heat wave)\b", re.I)),
+    ("severe_storm", re.compile(r"\b(severe storms?|tornadoes?|thunderstorms?|hail)\b", re.I)),
+    ("winter", re.compile(r"\b(winter|snowfall|snow|freezing|freeze|blizzard|ice)\b", re.I)),
 )
 _REGION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("Midwest", re.compile(r"\b(?:midwestern|midwest)\b", re.I)),
@@ -37,7 +38,7 @@ _REGION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("West", re.compile(r"\b(?:west coast|the west|west)\b", re.I)),
     ("South", re.compile(r"\b(?:southeast|gulf coast|the south|southern|south)\b", re.I)),
 )
-_METRIC_HAZARD = {
+METRIC_HAZARD = {
     "snowfall_day_pct": "winter",
     "freeze_day_pct": "winter",
     "heat_day_pct": "heat",
@@ -172,14 +173,15 @@ class ResolvedIntent:
 
 
 def parse_message(message: str) -> ParsedMessage:
-    text = " ".join(message.strip().split())
-    low = text.lower()
-    if _non_english(text):
+    text = _fold_punctuation(" ".join(message.strip().split()))
+    if _non_latin(text):
         return ParsedMessage(intent="unsupported_language")
+    low = text.lower()
     if re.fullmatch(r"(?:hi|hello|hey|thanks|thank you|good morning|good afternoon)[.!]?", low):
         return ParsedMessage(intent="greeting")
     occupied = [False] * len(low)
-    hub_ids = _mark_aliases(low, ALIASES, occupied)
+    hub_ids = _mark_aliases(text, AIRPORT_CODES, occupied)
+    hub_ids.extend(_mark_aliases(low, ALIASES, occupied))
     hub_ids.extend(_fuzzy_hubs(low, occupied, hub_ids))
     unknown = _first_outside(low, occupied)
     regions = _find_regions(low)
@@ -203,9 +205,7 @@ def parse_message(message: str) -> ParsedMessage:
     investment = bool(re.search(r"\b(?:invest\w*|strengthen\w*|prioriti[sz]\w*)\b", low))
     rank = bool(re.search(r"\b(which|most|least|ranking|rank|highest|lowest|exposed|riskiest|safest|safer)\b", low))
     refers = _refers_back(low)
-    followish = bool(refers or re.search(r"מה לגבי|ומה לגבי", low)) or (
-        (" only" in f" {low}" or "בלבד" in low) and not compare and not rank and not why and not metric_q
-    )
+    followish = bool(refers) or (" only" in f" {low}" and not compare and not rank and not why and not metric_q)
     asks_safer = bool(re.search(r"\b(safer|safest)\b", low))
     detail = _detail_request(low)
     breakdown_ask = bool(
@@ -235,7 +235,7 @@ def parse_message(message: str) -> ParsedMessage:
         intent = "follow_up"
     elif methodology and not refers:
         intent = "methodology"
-    elif alerts and not hub_ids and not rank:
+    elif alerts and not rank:
         intent = "alerts"
     elif _bare_why(low):
         intent = "follow_up"
@@ -496,7 +496,7 @@ def _maybe_inherit(parsed: ParsedMessage, context: SessionContext) -> ParsedMess
             intent = "explain_hub"
             metric = None
             if not parsed.hazards_explicit:
-                hazard = _METRIC_HAZARD.get(context.metric or "")
+                hazard = METRIC_HAZARD.get(context.metric or "")
                 if hazard:
                     hazards = [hazard]
                     parsed.hazards_explicit = True
@@ -567,8 +567,44 @@ def _clarify(question: str, parsed: ParsedMessage) -> ResolvedIntent:
     )
 
 
-def _non_english(text: str) -> bool:
-    return bool(re.search(r"[^\x00-\x7F]", text))
+_PUNCT_FOLDS = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2212": "-",
+        "\u00b0": " ",
+        "\u00ba": " ",
+        "\u00a0": " ",
+    }
+)
+_NON_LATIN = re.compile(
+    "["
+    "\u0370-\u03ff"  # Greek
+    "\u0400-\u04ff"  # Cyrillic
+    "\u0590-\u05ff"  # Hebrew
+    "\u0600-\u06ff"  # Arabic
+    "\u0900-\u097f"  # Devanagari
+    "\u3040-\u30ff"  # Hiragana and Katakana
+    "\u4e00-\u9fff"  # CJK
+    "\uac00-\ud7af"  # Hangul
+    "]"
+)
+
+
+def _fold_punctuation(text: str) -> str:
+    """Curly quotes, dashes, and a degree sign are still English."""
+    return text.translate(_PUNCT_FOLDS)
+
+
+def _non_latin(text: str) -> bool:
+    """Hebrew, Arabic, and other non-Latin scripts. Accented Latin letters stay."""
+    return bool(_NON_LATIN.search(text))
 
 
 def _refers_back(low: str) -> bool:
@@ -727,7 +763,7 @@ def _ordinal_index(low: str) -> int | None:
 
 
 def _unsupported_window(low: str) -> bool:
-    if _window(low) in {"last_calendar_year", "trailing_365", "last_winter"}:
+    if _window(low) in WINDOWS:
         return False
     if re.search(
         r"\b(january|february|march|april|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b",
@@ -748,9 +784,9 @@ def _detail_request(low: str) -> str | None:
         r"\b(data|weather|fema|sources?)\b", low
     ):
         return "methodology"
-    if re.search(r"\b(sources?|citations?)\b|מקורות", low):
+    if re.search(r"\b(sources?|citations?)\b", low):
         return "sources"
-    if re.search(r"\b(assumptions?|limitations?|definitions?)\b|הנחות", low):
+    if re.search(r"\b(assumptions?|limitations?|definitions?)\b", low):
         return "assumptions"
     if re.search(r"\b(methodolog\w*|breakdown|weights?|how (?:is|are|do you).{0,40}(?:score|index|calculated|computed))\b", low):
         return "methodology"
@@ -879,7 +915,8 @@ def _hub_only_follow_up(parsed: ParsedMessage) -> bool:
     if len(parsed.hub_ids) != 1:
         return False
     stripped = re.sub(r"[^a-z\s]", " ", parsed.text.lower())
-    for alias, hub_id in ALIASES:
+    names = (*ALIASES, *((code.lower(), hub_id) for code, hub_id in AIRPORT_CODES))
+    for alias, hub_id in names:
         if hub_id == parsed.hub_ids[0]:
             stripped = re.sub(rf"\b{re.escape(alias)}\b", " ", stripped)
     glue = {"and", "also", "too", "what", "about", "how", "now", "please", "the", "for", "a"}

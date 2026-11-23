@@ -6,15 +6,19 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import replace
 
 from app.agent.composer import (
+    alerts_answer,
     apply_model_prose,
     canned_answer,
     clarification_answer,
     deterministic_answer,
     evidence_block,
+    unavailable_answer,
+    unavailable_notice,
 )
-from app.agent.llm import llm_enabled, request_answer, request_intent
+from app.agent.llm import LLM_UNAVAILABLE_NOTE, llm_enabled, request_answer, request_intent
 from app.agent.session_context import (
     HAZARDS,
     METRICS,
@@ -25,7 +29,7 @@ from app.agent.session_context import (
     resolve_intent,
 )
 from app.db import repository
-from app.risk.engine import public_report, score_selection
+from app.risk.engine import alerts_selection, public_report, score_selection
 from app.risk.hubs import HUBS
 
 logger = logging.getLogger(__name__)
@@ -52,7 +56,7 @@ def handle_chat(session_id: str | None, message: str) -> dict:
         repository.add_message(session_id, "assistant", answer.answer, payload)
         return payload
 
-    parsed, intent_note = _choose_parse(text, context)
+    parsed, intent_note = _choose_parse(preview, text, context)
     if formula and context.last_intent and not parsed.hub_ids:
         parsed.intent = "follow_up"
         parsed.detail = "breakdown"
@@ -68,11 +72,17 @@ def handle_chat(session_id: str | None, message: str) -> dict:
         repository.add_message(session_id, "assistant", answer.answer, payload)
         return payload
 
-    hub_ids, region = _targets(resolved)
-    reports, window_key, _label, _span = score_selection(hub_ids, region, resolved.time_window)
+    hub_ids, region = (list(resolved.hub_ids) or None), (None if resolved.hub_ids else resolved.region)
+    if resolved.intent == "alerts":
+        return _alerts_turn(session_id, text, context, resolved, hub_ids, region)
+    selection = score_selection(hub_ids, region, resolved.time_window)
+    reports, window_key = selection.reports, selection.window_key
     resolved.time_window = window_key
     if not reports:
-        answer = clarification_answer("None of the hubs in this set match that request.")
+        if selection.unavailable:
+            answer = unavailable_answer(selection.unavailable)
+        else:
+            answer = clarification_answer("None of the hubs in this set match that request.")
         payload = _payload(session_id, answer, resolved, _empty_evidence())
         repository.add_message(session_id, "assistant", answer.answer, payload)
         return payload
@@ -90,6 +100,10 @@ def handle_chat(session_id: str | None, message: str) -> dict:
         answer = apply_model_prose(answer, drafted, failure, evidence)
     else:
         answer = apply_model_prose(answer, None, None, evidence)
+    if selection.unavailable:
+        notice = unavailable_notice(selection.unavailable)
+        answer.answer = f"{notice} {answer.answer}"
+        answer.uncertainties = [notice, *answer.uncertainties]
     if intent_note:
         answer.uncertainties = [intent_note, *answer.uncertainties]
 
@@ -122,21 +136,36 @@ def handle_chat(session_id: str | None, message: str) -> dict:
         repository.save_score_snapshot(public_report(report))
     payload = _payload(session_id, answer, resolved, evidence)
     payload["fallback"] = bool(answer.fallback)
-    payload["rejection_reason"] = answer.rejection_reason
     repository.add_message(session_id, "assistant", answer.answer, payload)
     return payload
 
 
-def _choose_parse(message: str, context: SessionContext) -> tuple[ParsedMessage, str | None]:
-    rules = parse_message(message)
+def _alerts_turn(
+    session_id: str,
+    text: str,
+    context: SessionContext,
+    resolved,
+    hub_ids: list[str] | None,
+    region: str | None,
+) -> dict:
+    """Active alerts only: no daily weather is loaded and no model call is made."""
+    items = alerts_selection(hub_ids, region)
+    answer = alerts_answer(items) if items else clarification_answer("None of the hubs in this set match that request.")
+    repository.save_context(session_id, replace(context, last_intent="alerts", last_user_message=text).to_dict())
+    payload = _payload(session_id, answer, resolved, _empty_evidence())
+    repository.add_message(session_id, "assistant", answer.answer, payload)
+    return payload
+
+
+def _choose_parse(rules: ParsedMessage, message: str, context: SessionContext) -> tuple[ParsedMessage, str | None]:
     if not llm_enabled():
         return rules, None
     catalog = "\n".join(f"{hub.hub_id}: {hub.name}, {hub.region}" for hub in HUBS)
     try:
         model_intent, note = request_intent(message, json.dumps(context.for_intent_parser(), ensure_ascii=True), catalog)
-    except Exception as exc:
-        logger.warning("intent model failed: %s", exc)
-        return rules, f"language model request failed ({exc.__class__.__name__})"
+    except Exception:
+        logger.exception("intent model failed")
+        return rules, LLM_UNAVAILABLE_NOTE
     if model_intent is None:
         return rules, note
     return _merge(rules, model_intent, context), None
@@ -191,14 +220,6 @@ def _merge(rules: ParsedMessage, model_intent, context: SessionContext) -> Parse
     if rules.unsupported_window:
         rules.time_window = "last_calendar_year"
     return rules
-
-
-def _targets(resolved) -> tuple[list[str] | None, str | None]:
-    if resolved.intent == "alerts":
-        return None, None
-    if resolved.hub_ids:
-        return list(resolved.hub_ids), None
-    return None, resolved.region
 
 
 def _payload(session_id: str, answer, resolved, evidence: dict) -> dict:

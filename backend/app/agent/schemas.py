@@ -68,12 +68,11 @@ class AnswerResult(BaseModel):
     sources: list[SourceItem] = Field(default_factory=list)
     follow_up_questions: list[str] = Field(default_factory=list)
     fallback: bool = False
-    rejection_reason: str | None = None
 
 
 class ChatRequest(BaseModel):
-    message: str
-    session_id: str | None = None
+    message: str = Field(min_length=1, max_length=500)
+    session_id: str | None = Field(default=None, max_length=64)
 
 
 INTENT_JSON_SCHEMA: dict = {

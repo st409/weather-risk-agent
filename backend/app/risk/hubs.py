@@ -45,7 +45,6 @@ ALIASES: tuple[tuple[str, str], ...] = (
     ("los angeles", "losangeles"),
     ("new york", "newyork"),
     ("minneapolis", "minneapolis"),
-    ("los angeles", "losangeles"),
     ("chicago", "chicago"),
     ("detroit", "detroit"),
     ("houston", "houston"),
@@ -54,18 +53,20 @@ ALIASES: tuple[tuple[str, str], ...] = (
     ("denver", "denver"),
     ("newark", "newyork"),
     ("miami", "miami"),
-    ("nyc", "newyork"),
-    ("dfw", "dallas"),
-    ("ewr", "newyork"),
-    ("ord", "chicago"),
-    ("lax", "losangeles"),
-    ("msp", "minneapolis"),
-    ("atl", "atlanta"),
-    ("iah", "houston"),
-    ("dtw", "detroit"),
-    ("mia", "miami"),
-    ("den", "denver"),
-    ("la", "losangeles"),
+)
+
+# Matched only as typed, in capitals. Lower case "mia" or "den" is not a hub.
+AIRPORT_CODES: tuple[tuple[str, str], ...] = (
+    ("NYC", "newyork"),
+    ("DFW", "dallas"),
+    ("EWR", "newyork"),
+    ("ORD", "chicago"),
+    ("LAX", "losangeles"),
+    ("MSP", "minneapolis"),
+    ("ATL", "atlanta"),
+    ("IAH", "houston"),
+    ("DTW", "detroit"),
+    ("MIA", "miami"),
 )
 
 OUTSIDE_PLACES: tuple[tuple[str, str], ...] = (

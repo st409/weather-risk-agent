@@ -18,6 +18,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test.db"))
     monkeypatch.setenv("WEATHER_DATA_MODE", "fixture")
     monkeypatch.setenv("WEATHER_RISK_DISABLE_LLM", "1")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MIN", "0")
     with TestClient(create_app()) as test_client:
         yield test_client
 
@@ -137,9 +138,8 @@ def test_normal_answers_name_scope_without_a_long_dump(client):
 
 
 def test_schema_failure_falls_back_without_inventing_a_score():
-    parsed, attempts = schema_retries(lambda _error: "not-json", IntentResult)
+    parsed = schema_retries(lambda _error: "not-json", IntentResult)
     assert parsed is None
-    assert attempts == 2
     # A deterministic answer is still a valid AnswerResult, which is what the
     # orchestrator returns when the model cannot.
     sample = AnswerResult(
@@ -216,3 +216,59 @@ def test_second_call_cannot_replace_computed_scores():
     assert "previous_turn" in prompt
     assert "miami" in prompt
     assert "ומה לגבי שיטפונות בלבד?" in prompt
+
+
+def test_compare_ranks_by_the_requested_hazards(client):
+    compared = client.get("/api/compare", params={"hub_ids": "miami,houston", "hazards": "hurricane,flood"})
+    assert compared.status_code == 200
+    body = compared.json()
+    assert body["hazards"] == ["hurricane", "flood"]
+    focus = []
+    for hub in body["hubs"]:
+        scores = {item["hazard"]: item["score"] for item in hub["hazard_scores"]}
+        expected = round((scores["hurricane"] + scores["flood"]) / 2, 2)
+        assert hub["focus_score"] == expected
+        focus.append(hub["focus_score"])
+    assert focus == sorted(focus, reverse=True)
+    unknown = client.get("/api/compare", params={"hub_ids": "miami,houston", "hazards": "blizzard"})
+    assert unknown.status_code == 400
+
+
+def test_admin_refresh_requires_the_token(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "")
+    assert client.post("/api/admin/refresh-scores").status_code == 404
+    monkeypatch.setenv("ADMIN_TOKEN", "secret")
+    assert client.post("/api/admin/refresh-scores").status_code == 403
+    assert client.post("/api/admin/refresh-scores", headers={"X-Admin-Token": "nope"}).status_code == 403
+    refreshed = client.post("/api/admin/refresh-scores", headers={"X-Admin-Token": "secret"})
+    assert refreshed.status_code == 200
+    assert refreshed.json()["refreshed"] == 10
+
+
+def test_chat_rejects_an_empty_or_huge_message_and_limits_repeats(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "limit.db"))
+    monkeypatch.setenv("WEATHER_DATA_MODE", "fixture")
+    monkeypatch.setenv("WEATHER_RISK_DISABLE_LLM", "1")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MIN", "0")
+    with TestClient(create_app()) as open_client:
+        assert open_client.post("/api/chat", json={"message": ""}).status_code == 422
+        assert open_client.post("/api/chat", json={"message": "x" * 501}).status_code == 422
+    monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MIN", "2")
+    with TestClient(create_app()) as limited:
+        assert limited.post("/api/chat", json={"message": "hello"}).status_code == 200
+        assert limited.post("/api/chat", json={"message": "hello"}).status_code == 200
+        blocked = limited.post("/api/chat", json={"message": "hello"})
+    assert blocked.status_code == 429
+    assert blocked.headers["retry-after"]
+
+
+def test_chicago_alerts_do_not_load_a_year_of_weather(client, monkeypatch):
+    def fail_weather(*_args, **_kwargs):
+        raise AssertionError("daily weather should not load for an alerts question")
+
+    monkeypatch.setattr("app.risk.engine.load_daily", fail_weather)
+    body = _chat(client, "alerts in Chicago")
+    assert body["intent"]["intent"] == "alerts"
+    assert body["intent"]["hub_ids"] == ["chicago"]
+    assert "Chicago" in body["answer"]["answer"]
+    assert "Scores:" not in body["answer"]["answer"]

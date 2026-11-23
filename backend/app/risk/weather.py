@@ -33,6 +33,14 @@ _CLIENT = httpx.Client(
 )
 
 
+class WeatherUnavailable(RuntimeError):
+    """Live daily weather could not be loaded for a hub. Nothing is substituted for it."""
+
+    def __init__(self, hub_id: str):
+        super().__init__(f"live weather unavailable for {hub_id}")
+        self.hub_id = hub_id
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -91,12 +99,7 @@ def load_daily(hub: Hub, start: date, end: date, force: bool = False) -> DailyBa
         days, retrieved_at = _fetch_open_meteo(hub, start, end)
     except Exception as exc:
         logger.warning("Open-Meteo failed for %s: %s", hub.hub_id, exc)
-        return _fixture_batch(
-            hub,
-            start,
-            end,
-            f"Open-Meteo request failed ({exc.__class__.__name__}). Day counts are an offline stand-in, not the live archive.",
-        )
+        raise WeatherUnavailable(hub.hub_id) from exc
     note = open_meteo_note()
     source = SourceRef(
         name="Open-Meteo Historical Weather API",

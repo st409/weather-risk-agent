@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -43,8 +42,6 @@ def main() -> int:
     finally:
         for proc in (ui, api):
             if proc.poll() is None:
-                if os.name == "nt":
-                    proc.send_signal(signal.CTRL_BREAK_EVENT if False else signal.SIGTERM)
                 proc.terminate()
         for proc in (ui, api):
             try:

@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date
 
-from app.db import repository
 from app.risk.hazards import get_baseline
 from app.risk.hubs import HUB_BY_ID, Hub, hubs_in_region
 from app.risk.scoring import HAZARD_ORDER, metrics_from_days, score_hub
-from app.risk.types import HubReport
-from app.risk.weather import load_alerts, load_daily
+from app.risk.types import HubAlerts, HubReport
+from app.risk.weather import WeatherUnavailable, load_alerts, load_daily
 from app.risk.windows import resolve_window
+
+
+@dataclass
+class Selection:
+    reports: list[HubReport]
+    unavailable: list[str]  # names of hubs whose live weather could not be loaded
+    window_key: str
+    window_label: str
 
 
 def select_hubs(hub_ids: list[str] | None, region: str | None) -> list[Hub]:
@@ -37,27 +45,28 @@ def build_report(hub: Hub, start: date, end: date, label: str, force: bool = Fal
     )
 
 
-def build_reports(hubs: list[Hub], start: date, end: date, label: str, force: bool = False) -> list[HubReport]:
-    if len(hubs) <= 1:
-        return [build_report(hub, start, end, label, force=force) for hub in hubs]
-    workers = min(6, len(hubs))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(lambda hub: build_report(hub, start, end, label, force), hubs))
+def _map(function, items: list) -> list:
+    if len(items) <= 1:
+        return [function(item) for item in items]
+    with ThreadPoolExecutor(max_workers=min(6, len(items))) as pool:
+        return list(pool.map(function, items))
 
 
-def recompute_stale_scores() -> int:
-    """Drop snapshots scored with snowfall > 0 cm and score those windows again."""
-    refreshed = 0
-    for hub_id, start, end, label in repository.stale_score_windows():
-        hub = HUB_BY_ID.get(hub_id)
-        if hub is None:
-            repository.delete_scores_for_window(hub_id, start, end)
-            continue
-        report = build_report(hub, date.fromisoformat(start), date.fromisoformat(end), label)
-        repository.delete_scores_for_window(hub_id, start, end)
-        repository.save_score_snapshot(public_report(report))
-        refreshed += 1
-    return refreshed
+def build_reports(
+    hubs: list[Hub], start: date, end: date, label: str, force: bool = False
+) -> tuple[list[HubReport], list[str]]:
+    """Score every hub. A hub with no live weather is left out and reported by name."""
+
+    def one(hub: Hub) -> HubReport | None:
+        try:
+            return build_report(hub, start, end, label, force=force)
+        except WeatherUnavailable:
+            return None
+
+    results = _map(one, hubs)
+    reports = [report for report in results if report is not None]
+    unavailable = [hub.name for hub, report in zip(hubs, results) if report is None]
+    return reports, unavailable
 
 
 def score_selection(
@@ -65,11 +74,17 @@ def score_selection(
     region: str | None,
     window_key: str | None,
     force: bool = False,
-) -> tuple[list[HubReport], str, str, str]:
+) -> Selection:
     start, end, key, label = resolve_window(window_key)
+    reports, unavailable = build_reports(select_hubs(hub_ids, region), start, end, label, force=force)
+    return Selection(reports, unavailable, key, label)
+
+
+def alerts_selection(hub_ids: list[str] | None, region: str | None) -> list[HubAlerts]:
+    """Active alerts only. No daily weather is loaded and nothing is scored."""
     hubs = select_hubs(hub_ids, region)
-    reports = build_reports(hubs, start, end, label, force=force)
-    return reports, key, label, f"{start.isoformat()} to {end.isoformat()}"
+    batches = _map(load_alerts, hubs)
+    return [HubAlerts(hub.hub_id, hub.name, hub.region, batch) for hub, batch in zip(hubs, batches)]
 
 
 def public_report(report: HubReport) -> dict:
@@ -104,7 +119,6 @@ def public_report(report: HubReport) -> dict:
         "sources": [source.public() for source in _unique_sources(report)],
         "uncertainties": report.uncertainties,
         "weather_fallback": report.weather_fallback,
-        "snow_day_rule": "gte_1cm",
     }
 
 

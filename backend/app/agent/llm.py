@@ -8,6 +8,7 @@ keep the deterministic result.
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from pydantic import BaseModel, ValidationError
@@ -20,24 +21,35 @@ from app.agent.schemas import (
 )
 from app.config import llm_disabled, openai_api_key, openai_model
 
+logger = logging.getLogger(__name__)
+
+LLM_UNAVAILABLE_NOTE = "The language model could not be used for this turn, so this wording comes from the computed facts."
+INTENT_MAX_TOKENS = 300
+ANSWER_MAX_TOKENS = 800
+
+
+class ModelRequestError(RuntimeError):
+    """The OpenAI call itself failed. The cause is chained and only logged."""
+
+
 INTENT_SYSTEM = """You convert one chat turn about weather disruption at a fixed set of US logistics hubs into JSON.
 Do not compute scores, rankings, or percentages.
 Use only hub ids from the list in the user message.
 The user message includes previous_turn from this same chat. Read it before you classify.
 If the new message continues that turn and does not name new hubs, set intent to follow_up and leave hub_ids empty.
-A follow-up such as "What about floods only?" or "ומה לגבי שיטפונות בלבד?" keeps the previous hubs and changes only the hazard the user just named.
+A follow-up such as "What about floods only?" keeps the previous hubs and changes only the hazard the user just named.
 If a place is outside the hub list, set needs_clarification to true and name the place in clarifying_question.
 Set needs_clarification to false when the request can be answered from the hub list."""
 
 ANSWER_SYSTEM = """You rewrite a factual skeleton into a short logistics briefing.
-Keep a normal answer to 2 or 3 plain sentences, then the scores line, then the one-line source clause ("Sources: Open-Meteo 2025 weather, FEMA NRI, NWS alerts." or the trailing-365 version when that window is named).
+Keep a normal answer to 2 or 3 plain sentences, then the scores line, then the one-line source clause, copied from the skeleton ("Sources: Open-Meteo <period> weather, FEMA NRI, NWS alerts.", where <period> is the calendar year or the last 365 days).
 If the question says "which hubs" or "rank", sentence 1 names every hub on the Scores line, uses plain city names, and has no digits. If it says "which hub", sentence 1 names one hub and has no digits.
 Sentence 2 gives only the one or two concrete facts from the skeleton, such as a day count or a plain FEMA or alert fact. Do not use internal names such as "freeze-day rate", "FEMA winter baseline", "high-wind rate", or "severe-storm baseline". Do not say "significant portion", "significant share", or "more significantly". Do not say "most exposed" unless the skeleton says it.
 Copy every count, percent, score, and contribution point from the skeleton. Write those numbers as digits: 14, not fourteen, and 99, not ninety-nine. You may reorder sentences, use synonyms, write 32°F for 32 F, or write "percent" for "%". Do not add numbers. Copy the skeleton's "Scores:" line, including "(higher = more exposed)" only when that Scores line has it. Do not repeat "(higher = more exposed)" in the reason. If the skeleton has no Scores line, do not write one. Prefer to keep a score number on that Scores line. If the skeleton says "Based on those risk drivers, I'd prioritize", keep that as its own sentence and do not attach it to the previous sentence or add a cost. If the skeleton does not say that, do not write "I'd prioritize". The lower score trails; never say the leader trails.
 When a hazard was removed, do not explain the result with that hazard. Keep the remaining drivers the skeleton names.
 When the skeleton explains a gap, keep that comparison in the reason. If it says who trails whom, start with that and copy "contributes X vs Y". If it says who edges out whom, start with that sentence. Do not first say which hubs are the most exposed. If it gives a pair such as "137 vs 120" or "10.9 vs 6.0 points", copy both numbers as digits. Do not paraphrase them away as "a higher number" or "higher exposure" without those figures. Do not repeat Scores figures in the reason; the Scores line carries them. Do not lead with the scores. Those points are contributions, not 0-100 hazard scores. A score is not a probability. Do not add a number that is not in the skeleton.
 If the skeleton says two hubs are effectively tied, keep "effectively tied" and do not call either one lower. If it says a hub is riskier, keep "is riskier" and do not call it lower.
-If the skeleton includes "Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025", copy that sentence unchanged. Never write a month name, and never say those yearly figures belong to a month or a custom range. Do not add that sentence when the skeleton omits it.
+If the skeleton starts with a sentence beginning "Only calendar year", copy that sentence unchanged. Never write a month name, and never say those yearly figures belong to a month or a custom range. Do not add that sentence when the skeleton omits it.
 Do not write a "Contributors, largest first" breakdown. The server appends that after your text.
 If the skeleton is a day count, keep every count, percent, threshold, and source, and write them as digits, for example "17 days, 4.7%". 32°F and 32 F are the same threshold. Do not add a risk score or a winter-score breakdown.
 Use plain city names everywhere. Never write "hub (Region region)". For a plural ranking, sentence 1 names every hub on the Scores line and no other hub. A later sentence may mention another hub only as trailing, without a new score.
@@ -57,16 +69,16 @@ def extract_json(text: str) -> str:
     return raw
 
 
-def schema_retries(load_text, model_cls: type[BaseModel]) -> tuple[BaseModel | None, int]:
+def schema_retries(load_text, model_cls: type[BaseModel]) -> BaseModel | None:
     """Try twice. load_text receives the previous validation error, or None."""
     error: Exception | None = None
-    for attempt in range(2):
+    for _attempt in range(2):
         text = load_text(error)
         try:
-            return model_cls.model_validate_json(extract_json(text)), attempt + 1
+            return model_cls.model_validate_json(extract_json(text))
         except (ValidationError, json.JSONDecodeError) as exc:
             error = exc
-    return None, 2
+    return None
 
 
 def intent_user_message(message: str, previous_turn: str, hub_catalog: str) -> str:
@@ -96,6 +108,7 @@ def request_intent(message: str, previous_turn: str, hub_catalog: str) -> tuple[
         "intent_result",
         INTENT_JSON_SCHEMA,
         IntentResult,
+        INTENT_MAX_TOKENS,
     )
     return parsed, note  # type: ignore[return-value]
 
@@ -113,17 +126,20 @@ def request_answer(
         "answer_draft",
         ANSWER_JSON_SCHEMA,
         AnswerDraft,
+        ANSWER_MAX_TOKENS,
     )
     return parsed, note  # type: ignore[return-value]
 
 
-def _request(system: str, user: str, schema_name: str, schema: dict, model_cls: type[BaseModel]):
+def _request(system: str, user: str, schema_name: str, schema: dict, model_cls: type[BaseModel], max_tokens: int):
+    """Return (parsed, note). The note is safe to show; the cause is only logged."""
     if not llm_enabled():
         return None, None
     try:
         from openai import OpenAI
-    except Exception as exc:
-        return None, f"language model client unavailable ({exc.__class__.__name__})"
+    except Exception:
+        logger.exception("openai client unavailable")
+        return None, LLM_UNAVAILABLE_NOTE
     client = OpenAI(api_key=openai_api_key(), timeout=45.0, max_retries=1)
     messages = [
         {"role": "system", "content": system},
@@ -142,21 +158,24 @@ def _request(system: str, user: str, schema_name: str, schema: dict, model_cls: 
             completion = client.chat.completions.create(
                 model=openai_model(),
                 messages=messages,
+                max_completion_tokens=max_tokens,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {"name": schema_name, "strict": True, "schema": schema},
                 },
             )
         except Exception as exc:
-            raise RuntimeError(exc.__class__.__name__) from exc
+            raise ModelRequestError from exc
         text = completion.choices[0].message.content or ""
         messages.append({"role": "assistant", "content": text})
         return text
 
     try:
-        parsed, _attempts = schema_retries(load_text, model_cls)
-    except RuntimeError as exc:
-        return None, f"language model request failed ({exc})"
+        parsed = schema_retries(load_text, model_cls)
+    except ModelRequestError as exc:
+        logger.warning("language model request failed: %r", exc.__cause__)
+        return None, LLM_UNAVAILABLE_NOTE
     if parsed is None:
-        return None, "schema validation failed twice"
+        logger.warning("language model reply failed schema validation twice (%s)", schema_name)
+        return None, LLM_UNAVAILABLE_NOTE
     return parsed, None

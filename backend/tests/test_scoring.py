@@ -181,7 +181,7 @@ def test_fema_snapshot_uses_published_scores():
     assert miami.hurricane_published is True
     assert denver.hurricane == 0
     assert denver.hurricane_published is False
-    assert miami.flood == 99.71 or miami.flood == 99.60 or miami.flood >= 99
+    assert miami.flood == 99.71
 
 
 def test_inch_snowfall_is_stored_as_centimeters(monkeypatch):
@@ -231,3 +231,22 @@ def test_default_window_is_previous_calendar_year():
     assert start == date(2025, 1, 1)
     assert end == date(2025, 12, 31)
     assert "2025" in label
+
+
+def test_a_hub_with_no_live_weather_is_left_out(monkeypatch):
+    from app.risk.engine import score_selection
+    from app.risk.weather import WeatherUnavailable, _empty_alerts, _fixture_batch
+
+    def daily(hub, start, end, force=False):
+        if hub.hub_id == "denver":
+            raise WeatherUnavailable(hub.hub_id)
+        return _fixture_batch(hub, start, end, "test stand-in")
+
+    monkeypatch.setattr("app.risk.engine.load_daily", daily)
+    monkeypatch.setattr(
+        "app.risk.engine.load_alerts",
+        lambda hub, force=False: _empty_alerts("test", True, "static_public_dataset", "nws"),
+    )
+    selection = score_selection(["denver", "dallas"], None, "last_calendar_year")
+    assert [report.hub_id for report in selection.reports] == ["dallas"]
+    assert selection.unavailable == ["Denver"]

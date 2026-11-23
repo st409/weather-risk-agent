@@ -37,6 +37,20 @@ def allowed_origins() -> list[str]:
     return origins
 
 
+def admin_token() -> str:
+    """Secret for POST /api/admin/refresh-scores. Empty means the route does not exist."""
+    return os.getenv("ADMIN_TOKEN", "").strip()
+
+
+def chat_rate_limit_per_minute() -> int:
+    """Per-IP cap on POST /api/chat. 0 turns the limit off (tests and evals)."""
+    raw = os.getenv("CHAT_RATE_LIMIT_PER_MIN", "30").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 30
+
+
 def openai_model() -> str:
     return os.getenv("OPENAI_MODEL", "").strip() or "gpt-4o-mini"
 

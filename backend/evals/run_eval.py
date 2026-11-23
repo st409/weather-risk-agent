@@ -21,6 +21,7 @@ def main() -> int:
     os.environ["DATABASE_PATH"] = str(Path(tmp) / "eval.db")
     os.environ["WEATHER_DATA_MODE"] = "fixture"
     os.environ["WEATHER_RISK_DISABLE_LLM"] = "1"
+    os.environ["CHAT_RATE_LIMIT_PER_MIN"] = "0"
 
     from fastapi.testclient import TestClient
 
@@ -63,7 +64,27 @@ def _chat_case(client, case, answer_model, intent_model) -> list[str]:
             intent_model.model_validate(body["intent"])
         except Exception as exc:
             return [f"schema: {exc}"]
-    return _check(case.get("expect") or {}, body)
+    return _check(_with_window(case.get("expect") or {}), body)
+
+
+def _with_window(value):
+    """Expectations name the current calendar year instead of a fixed one."""
+    from app.agent.composer import window_notice
+    from app.risk.windows import last_calendar_year
+
+    year = str(last_calendar_year())
+    notice = window_notice(None)
+
+    def bind(item):
+        if isinstance(item, str):
+            return item.replace("{YEAR}", year).replace("{NOTICE}", notice)
+        if isinstance(item, list):
+            return [bind(part) for part in item]
+        if isinstance(item, dict):
+            return {key: bind(part) for key, part in item.items()}
+        return item
+
+    return bind(value)
 
 
 def _reason_shape_errors(text: str) -> list[str]:
@@ -250,9 +271,8 @@ def _check(expect: dict, body: dict) -> list[str]:
 
 def _opening_sentence(text: str) -> str:
     body = text.strip()
-    notice = "Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025."
-    if body.startswith(notice):
-        body = body[len(notice) :].strip()
+    if body.startswith("Only calendar year "):
+        body = re.split(r"(?<=[.!?])\s+", body, maxsplit=1)[-1].strip()
     return re.split(r"(?<=[.!?])\s+", body, maxsplit=1)[0]
 
 
@@ -406,8 +426,8 @@ def _schema_case() -> list[str]:
     from app.agent.llm import schema_retries
     from app.agent.schemas import IntentResult
 
-    parsed, attempts = schema_retries(lambda _error: "not-json", IntentResult)
-    if parsed is not None or attempts != 2:
+    parsed = schema_retries(lambda _error: "not-json", IntentResult)
+    if parsed is not None:
         return ["schema retry did not fail closed after two attempts"]
     return []
 

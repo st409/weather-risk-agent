@@ -8,7 +8,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-from app.config import database_path
+from app.config import data_mode, database_path
 from app.db.models import SCHEMA_SQL
 from app.risk.hazards import load_baselines
 from app.risk.hubs import HUBS
@@ -215,44 +215,12 @@ def get_daily_window(hub_id: str, window_start: str, window_end: str) -> dict | 
     }
 
 
-def replace_window_note(hub_id: str, window_start: str, window_end: str, uncertainty_note: str) -> None:
-    with db() as conn:
-        conn.execute(
-            """
-            UPDATE observation_windows
-            SET uncertainty_note = ?
-            WHERE hub_id = ? AND window_start = ? AND window_end = ?
-            """,
-            (uncertainty_note, hub_id, window_start, window_end),
-        )
-
-
 def delete_scores_for_window(hub_id: str, window_start: str, window_end: str) -> None:
     with db() as conn:
         conn.execute(
             "DELETE FROM risk_scores WHERE hub_id = ? AND window_start = ? AND window_end = ?",
             (hub_id, window_start, window_end),
         )
-
-
-def stale_score_windows() -> list[tuple[str, str, str, str]]:
-    """Latest snapshot per window that was saved before the >= 1 cm snow-day rule."""
-    with db() as conn:
-        rows = conn.execute(
-            """
-            SELECT hub_id, window_start, window_end, window_label, payload_json
-            FROM risk_scores
-            WHERE id IN (
-                SELECT MAX(id) FROM risk_scores GROUP BY hub_id, window_start, window_end
-            )
-            """
-        ).fetchall()
-    stale = []
-    for row in rows:
-        payload = row["payload_json"] or ""
-        if "above 0 cm" in payload.lower() or '"snow_day_rule": "gte_1cm"' not in payload:
-            stale.append((row["hub_id"], row["window_start"], row["window_end"], row["window_label"]))
-    return stale
 
 
 def save_alert_cache(hub_id: str, batch: AlertBatch) -> None:
@@ -307,6 +275,8 @@ def get_alert_cache(hub_id: str, max_age_minutes: int) -> dict | None:
 
 
 def save_score_snapshot(report_public: dict) -> None:
+    if report_public.get("weather_fallback") and data_mode() == "live":
+        return  # a stand-in is never stored as a live score
     hazards = {item["hazard"]: item["score"] for item in report_public.get("hazard_scores", [])}
     with db() as conn:
         conn.execute(
@@ -331,17 +301,6 @@ def save_score_snapshot(report_public: dict) -> None:
                 json.dumps(report_public),
             ),
         )
-
-
-def latest_score(hub_id: str) -> dict | None:
-    with db() as conn:
-        row = conn.execute(
-            "SELECT payload_json FROM risk_scores WHERE hub_id = ? ORDER BY id DESC LIMIT 1",
-            (hub_id,),
-        ).fetchone()
-    if row is None:
-        return None
-    return json.loads(row["payload_json"])
 
 
 def ensure_session(session_id: str) -> None:
