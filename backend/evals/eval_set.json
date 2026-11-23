@@ -4,7 +4,9 @@
     "turns": ["Which hubs in the Midwest are most exposed to winter disruption?"],
     "expect": {
       "intent": "rank_hubs",
-      "answer_contains": ["Minneapolis hub (Midwest region)", "Chicago hub (Midwest region)", "Detroit hub (Midwest region)", "is lower", "Based on 2025 weather data and FEMA risk data."],
+      "answer_contains": ["Minneapolis hub (Midwest region)", "Chicago hub (Midwest region)", "Detroit hub (Midwest region)", "Scores:", "Based on 2025 weather data and FEMA risk data."],
+      "opening_has_no_digits": true,
+      "scores_last": true,
       "answer_excludes": ["Miami", "Los Angeles", "not a probability", "Weather-day rates", "other factors"],
       "contributors_sum": true,
       "has_breakdown": true,
@@ -43,9 +45,9 @@
     "turns": ["Why is the Dallas hub's weather disruption risk high?"],
     "expect": {
       "intent": "explain_hub",
-      "answer_contains": ["Dallas hub (South region)", "Based on 2025 weather data and FEMA risk data.", "mainly flood", "hurricane"],
-      "answer_regex": "mainly flood \\(\\d+\\.\\d+\\) and hurricane \\(\\d+\\.\\d+\\) of \\d+\\.\\d+",
-      "parenthetical_are_contributions": true,
+      "answer_contains": ["Dallas hub (South region)", "Based on 2025 weather data and FEMA risk data.", "mainly from", "flood", "hurricane", "Scores:"],
+      "opening_has_no_digits": true,
+      "scores_last": true,
       "answer_excludes": ["not a probability", "Weather-day rates", "other factors"],
       "breakdown_contains": ["heat", "hurricane", "Contributors, largest first"],
       "uncertainties_exclude": ["coastal-flood"],
@@ -103,9 +105,8 @@
       "intent": "rank_hubs",
       "needs_clarification": false,
       "rankings_count": 10,
-      "answer_contains": ["lowest", "disruption", "is riskier at"],
-      "answer_regex": "is riskier at \\d+\\.\\d+ and .+ is riskier at \\d+\\.\\d+",
-      "answer_excludes": ["is lower"]
+      "answer_contains": ["least exposed", "disruption", "is riskier", "Scores:"],
+      "answer_excludes": ["is lower", "is riskier at"]
     }
   },
   {
@@ -181,7 +182,9 @@
     "expect": {
       "intent": "rank_hubs",
       "rankings_count": 10,
-      "answer_contains": ["highest overall disruption", "mainly on"],
+      "answer_contains": ["most weather disruption risk overall", "mainly from", "driven by", "Scores:"],
+      "opening_has_no_digits": true,
+      "scores_last": true,
       "lower_hubs_use_own_drivers": true,
       "answer_excludes": ["highest overall overall", "Scope:"]
     }
@@ -257,7 +260,9 @@
     "turns": ["Compare Miami and Houston in terms of hurricane and flood exposure."],
     "expect": {
       "intent": "compare_hubs",
-      "answer_contains": ["Miami hub (South region)", "Houston hub (South region)", "vs", "does not separate", "Based on 2025 weather data and FEMA risk data."],
+      "answer_contains": ["Miami hub (South region)", "Houston hub (South region)", "does not separate", "Scores:", "Based on 2025 weather data and FEMA risk data."],
+      "opening_has_no_digits": true,
+      "scores_last": true,
       "answer_excludes": ["Scope:"],
       "answer_excludes_regex": "\\(\\d+(?:\\.\\d+)? points\\)"
     }
@@ -531,7 +536,8 @@
       "intent": "rank_hubs",
       "rankings_count": 5,
       "answer_contains": ["Houston hub (South region)", "62.4"],
-      "answer_regex": "Houston hub \\(South region\\) is the most exposed to flood, at 62\\.4",
+      "answer_regex": "Houston hub \\(South region\\) is the most exposed hub to flood disruption[\\s\\S]*Scores: Houston 62\\.4",
+      "opening_has_no_digits": true,
       "answer_excludes": ["Chicago", "Minneapolis", "Los Angeles"]
     }
   },
@@ -602,8 +608,9 @@
     "turns": ["Which hubs are most exposed to hurricanes?"],
     "expect": {
       "intent": "rank_hubs",
-      "answer_contains": ["effectively tied", "80.0"],
-      "answer_regex": "effectively tied with .+ at 80\\.0"
+      "answer_contains": ["effectively tied", "80.0", "Scores:"],
+      "answer_excludes": ["is lower"],
+      "opening_has_no_digits": true
     }
   },
   {
@@ -616,7 +623,7 @@
       "intent": "explain_hub",
       "hub_ids": ["denver"],
       "answer_contains": ["Contributors, largest first", "freeze", "snow"],
-      "answer_excludes": ["had"]
+      "answer_excludes": ["valid days"]
     }
   },
   {
@@ -673,6 +680,38 @@
       "hub_count": 2,
       "answer_contains": ["mainly because", "contributes", "vs", "flood"],
       "gap_matches_breakdown": true
+    }
+  },
+  {
+    "id": "why_after_winter_compare_keeps_the_gap",
+    "turns": ["Compare Chicago and Detroit on winter", "why?"],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["detroit", "chicago"],
+      "hazards": ["winter"],
+      "answer_contains": ["mainly because", "contributes", "vs", "Chicago", "Detroit", "51.2", "44.5"],
+      "gap_matches_breakdown": true
+    }
+  },
+  {
+    "id": "why_after_excluded_rank_keeps_renormalized_score",
+    "turns": ["What's the riskiest hub if we ignore flood?", "why?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "answer_contains": ["removing", "flood", "51.4", "Scores:"],
+      "answer_excludes": ["50.6", "(higher = more exposed)"],
+      "scores_are_renormalized": true,
+      "excluded_hazards": ["flood"],
+      "opening_has_no_digits": true
+    }
+  },
+  {
+    "id": "why_after_midwest_freeze_stays_on_days",
+    "turns": ["Rank the Midwest by freeze days", "why?"],
+    "expect": {
+      "intent": "metric_lookup",
+      "answer_contains": ["Minneapolis", "freeze days", "Detroit", "of 365"],
+      "answer_excludes": ["winter score", "Denver", "72.3"]
     }
   }
 ]

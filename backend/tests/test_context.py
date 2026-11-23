@@ -308,6 +308,49 @@ def test_harden_and_freshness_are_answered():
     assert fresh.needs_clarification is False
 
 
+def test_bare_why_after_compare_explains_the_gap():
+    context = SessionContext(
+        hub_ids=["chicago", "detroit"],
+        hazards=["winter"],
+        last_intent="compare_hubs",
+        last_result_hub_ids=["detroit", "chicago"],
+    )
+    resolved = _resolve("why?", context)
+    assert resolved.intent == "explain_hub"
+    assert resolved.explain_gap is True
+    assert resolved.hub_ids == ["detroit", "chicago"]
+    assert resolved.hazards == ["winter"]
+
+
+def test_bare_why_after_exclusion_keeps_the_filter():
+    context = SessionContext(
+        hub_ids=["newyork", "houston", "dallas"],
+        last_intent="rank_hubs",
+        last_result_hub_ids=["newyork", "houston", "dallas"],
+        excluded_hazards=["flood"],
+    )
+    resolved = _resolve("why?", context)
+    assert resolved.intent == "rank_hubs"
+    assert resolved.excluded_hazards == ["flood"]
+    assert resolved.hub_ids[0] == "newyork"
+
+
+def test_bare_why_after_a_day_count_stays_on_that_count():
+    context = SessionContext(
+        hub_ids=["minneapolis", "detroit", "chicago"],
+        region="Midwest",
+        hazards=["winter"],
+        metric="freeze_day_pct",
+        last_intent="metric_lookup",
+        last_result_hub_ids=["minneapolis", "detroit", "chicago"],
+    )
+    resolved = _resolve("why?", context)
+    assert resolved.intent == "metric_lookup"
+    assert resolved.metric == "freeze_day_pct"
+    assert resolved.hazards == []
+    assert resolved.region == "Midwest"
+
+
 def test_which_and_why_still_ranks():
     resolved = _resolve("If we could only harden one hub this winter, which one should we choose and why?")
     assert resolved.intent == "rank_hubs"

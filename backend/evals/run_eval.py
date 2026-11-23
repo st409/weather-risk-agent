@@ -85,8 +85,20 @@ def _check(expect: dict, body: dict) -> list[str]:
     for needle in expect.get("answer_excludes", []):
         if needle.lower() in text.lower():
             errors.append(f"answer unexpectedly mentions {needle}")
-    if expect.get("answer_regex") and not re.search(expect["answer_regex"], text):
+    if expect.get("answer_regex") and not re.search(expect["answer_regex"], text, re.S):
         errors.append("answer regex failed")
+    if expect.get("opening_has_no_digits"):
+        opening = _opening_sentence(text)
+        if re.search(r"\d", opening):
+            errors.append(f"opening sentence has a digit: {opening}")
+    if expect.get("scores_last"):
+        match = re.search(r"Scores:.*?(?=\s+Based on|\s+Contributors,|$)", text, re.S)
+        if match is None:
+            errors.append("missing scores line")
+        else:
+            after = text[match.end() :].strip()
+            if after and not after.startswith("Based on") and "Contributors, largest first" not in after:
+                errors.append("text after the scores line")
     if expect.get("has_assumptions") and not answer["assumptions"]:
         errors.append("no assumptions")
     if expect.get("has_sources") and not answer["sources"]:
@@ -154,6 +166,14 @@ def _check(expect: dict, body: dict) -> list[str]:
     if expect.get("hub_count") is not None and len(intent.get("hub_ids") or []) != expect["hub_count"]:
         errors.append(f"hub count {len(intent.get('hub_ids') or [])} != {expect['hub_count']}")
     return errors
+
+
+def _opening_sentence(text: str) -> str:
+    body = text.strip()
+    notice = "Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025."
+    if body.startswith(notice):
+        body = body[len(notice) :].strip()
+    return re.split(r"(?<=[.!?])\s+", body, maxsplit=1)[0]
 
 
 def _gap_match_errors(text: str, breakdown: str) -> list[str]:
@@ -231,7 +251,12 @@ def _mainly_clause_errors(text: str, breakdown: str) -> list[str]:
 
 
 def _own_driver_errors(text: str, breakdown: str) -> list[str]:
-    matches = list(re.finditer(r"([A-Z][^.]{0,80}?) is lower at \d+(?:\.\d+)?, mainly on ([^.]+)\.", text))
+    matches = list(
+        re.finditer(
+            r"([A-Z][^.]{0,80}?) is (?:lower at \d+(?:\.\d+)?, mainly on|close behind, driven by) ([^.]+)\.",
+            text,
+        )
+    )
     if len(matches) < 2:
         return ["missing own-driver lines for later hubs"]
     errors = []

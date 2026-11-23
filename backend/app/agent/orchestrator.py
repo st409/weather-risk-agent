@@ -59,6 +59,7 @@ def handle_chat(session_id: str | None, message: str) -> dict:
     resolved = resolve_intent(parsed, context)
     resolved.question = text
     resolved.prior_question = context.last_user_message
+    resolved.show_score_legend = not context.score_legend_shown
     if resolved.needs_clarification:
         answer = clarification_answer(resolved.clarifying_question or "Could you narrow that down?")
         if intent_note:
@@ -113,6 +114,8 @@ def handle_chat(session_id: str | None, message: str) -> dict:
             last_user_message=text,
             offered_breakdown=any("full score breakdown" in item.lower() for item in answer.follow_up_questions),
             focus_hub_id=focus_hub_id,
+            excluded_hazards=list(resolved.excluded_hazards),
+            score_legend_shown=context.score_legend_shown or "higher = more exposed" in answer.answer,
         ).to_dict(),
     )
     for report in reports:
@@ -191,13 +194,9 @@ def _merge(rules: ParsedMessage, model_intent, context: SessionContext) -> Parse
 def _targets(resolved) -> tuple[list[str] | None, str | None]:
     if resolved.intent == "alerts":
         return None, None
-    if resolved.intent == "rank_hubs" and not resolved.hub_ids:
-        return None, resolved.region
     if resolved.hub_ids:
         return list(resolved.hub_ids), None
-    if resolved.intent == "rank_hubs":
-        return None, resolved.region
-    return list(resolved.hub_ids), None
+    return None, resolved.region
 
 
 def _payload(session_id: str, answer, resolved, evidence: dict) -> dict:

@@ -30,13 +30,14 @@ If a place is outside the hub list, set needs_clarification to true and name the
 Set needs_clarification to false when the request can be answered from the hub list."""
 
 ANSWER_SYSTEM = """You rewrite a factual skeleton into a short logistics briefing.
-Keep a normal answer to 2 or 3 plain sentences: the verdict and score, the skeleton's driver clause ("mainly flood (12.4) and hurricane (10.3) of 42.9"), and the source clause ("Based on 2025 weather data and FEMA risk data." or the trailing-365 version when that window is named).
-When the skeleton names drivers with points in parentheses, those points are contributions to the total. Copy them. Do not replace them with the 0-100 hazard score. A score is not a probability.
+Keep a normal answer to 2 or 3 plain sentences, then the source clause ("Based on 2025 weather data and FEMA risk data." or the trailing-365 version when that window is named).
+Sentence 1 names who is most exposed and to what, with no digits. Sentence 2 gives the one or two concrete facts from the skeleton, not every contributor and not the full weights. The last sentence copies the skeleton's "Scores:" line, including "(higher = more exposed)" when the skeleton has it.
+When the skeleton explains a gap with "contributes X vs Y", copy that comparison. Those points are contributions, not 0-100 hazard scores. A score is not a probability.
+If the skeleton says two hubs are effectively tied, keep "effectively tied" and do not call either one lower. If it says a hub is riskier, keep "is riskier" and do not call it lower.
 If the skeleton includes "Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025", copy that sentence unchanged. Never say those yearly figures belong to a month or a custom range. Do not add that sentence when the skeleton omits it.
 Do not write a "Contributors, largest first" breakdown. The server appends that after your text.
-If the skeleton is a day count, keep the count, the percent, the >= 1 cm threshold, and the source. Do not add a risk score or a winter-score breakdown.
+If the skeleton is a day count, keep every count, percent, threshold, and source. 32°F and 32 F are the same threshold. Do not add a risk score or a winter-score breakdown.
 On the first mention, name a hub as "<Name> hub (<Region> region)". After that, use only the hub name.
-If the skeleton says later hubs are riskier, keep "is riskier at" and both scores. If it says a later hub is lower, keep "is lower".
 Use only numbers that appear in the skeleton or the evidence. Do not invent hubs, drivers, or scores. A snow day is daily snowfall >= 1 cm.
 Return follow_up_questions as an empty list. The server supplies them."""
 

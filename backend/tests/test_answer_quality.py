@@ -38,7 +38,8 @@ def test_prompt_keeps_short_answers():
     assert "2 or 3" in ANSWER_SYSTEM
     assert "not a probability" in ANSWER_SYSTEM
     assert ">= 1 cm" in ANSWER_SYSTEM
-    assert "is riskier at" in ANSWER_SYSTEM
+    assert "is riskier" in ANSWER_SYSTEM
+    assert "higher = more exposed" in ANSWER_SYSTEM
 
 
 def test_draft_accepts_short_answers_and_checks_numbers():
@@ -81,6 +82,48 @@ def test_draft_accepts_short_answers_and_checks_numbers():
     replaced = apply_model_prose(AnswerResult(answer=why_skeleton), AnswerDraft(answer="Dallas is high, mainly flood (49.6) and hurricane (51.5) of 42.9."), None, scored)
     assert replaced.answer == why_skeleton
     assert not _draft_is_usable(f"{WINDOW_NOTICE} Denver is highest at 44.8.", {"rankings": [{"focus_score": 44.8}]}, [], "")
+
+
+def test_day_count_draft_accepts_a_degree_symbol():
+    skeleton = (
+        "Minneapolis hub has the most freeze days: 212 of 365, 58.1%. "
+        "Next is Denver hub at 151 of 365, 41.4%. "
+        "A freeze day has a minimum of 32 F or lower. "
+        "Source: offline stand-in for the Open-Meteo archive."
+    )
+    draft = (
+        "Minneapolis leads with 212 freeze days, 58.1% of 365. "
+        "Denver is next at 151 of 365, 41.4%. "
+        "A freeze day is a low of 32°F. "
+        "Source: offline stand-in for the Open-Meteo archive."
+    )
+    evidence = {"metric": {"numerator": 212, "value": 58.1, "denominator": 365}}
+    assert _draft_is_usable(draft, evidence, [], skeleton)
+    assert not _draft_is_usable(draft.replace("151", "999"), evidence, [], skeleton)
+
+
+def test_tied_next_day_counts_are_all_named():
+    from types import SimpleNamespace
+
+    from app.agent.composer import _next_count_clause
+
+    def hub(hub_id: str, name: str, region: str):
+        return SimpleNamespace(hub_id=hub_id, name=name, region=region)
+
+    packed = [
+        (hub("dallas", "Dallas", "South"), {"numerator": 7, "denominator": 365, "value": 1.9}),
+        (hub("losangeles", "Los Angeles", "West"), {"numerator": 3, "denominator": 365, "value": 0.8}),
+        (hub("denver", "Denver", "Mountain"), {"numerator": 3, "denominator": 365, "value": 0.8}),
+        (hub("newyork", "New York/Newark", "Northeast"), {"numerator": 3, "denominator": 365, "value": 0.8}),
+        (hub("houston", "Houston", "South"), {"numerator": 0, "denominator": 365, "value": 0.0}),
+    ]
+    text = _next_count_clause(packed, set())
+    assert "Next are" in text
+    assert "each 3 of 365" in text
+    assert "Los Angeles hub (West region)" in text
+    assert "Denver hub (Mountain region)" in text
+    assert "New York/Newark hub (Northeast region)" in text
+    assert "Houston" not in text
 
 
 def test_snow_answer_leads_with_count_threshold_and_source(client):
@@ -130,9 +173,10 @@ def test_rank_explains_second_and_third(client):
     body = _chat(client, "Which hubs in the Midwest are most exposed to winter disruption?")
     text = body["answer"]["answer"]
     assert "Minneapolis hub (Midwest region)" in text
-    assert text.count("is lower") >= 2
     assert "Chicago hub (Midwest region)" in text
     assert "Detroit hub (Midwest region)" in text
+    assert "Scores:" in text
+    assert not any(char.isdigit() for char in text.split(".", 1)[0])
 
 
 def test_compare_ties_and_keeps_each_baseline(client):

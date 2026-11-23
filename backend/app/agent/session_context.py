@@ -59,6 +59,8 @@ class SessionContext:
     last_user_message: str = ""
     offered_breakdown: bool = False
     focus_hub_id: str | None = None
+    excluded_hazards: list[str] = field(default_factory=list)
+    score_legend_shown: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict | None) -> "SessionContext":
@@ -74,6 +76,8 @@ class SessionContext:
             last_user_message=str(raw.get("last_user_message") or "")[:500],
             offered_breakdown=bool(raw.get("offered_breakdown")),
             focus_hub_id=raw.get("focus_hub_id") if raw.get("focus_hub_id") in HUB_BY_ID else None,
+            excluded_hazards=[hazard for hazard in raw.get("excluded_hazards") or [] if hazard in HAZARDS],
+            score_legend_shown=bool(raw.get("score_legend_shown")),
         )
 
     def to_dict(self) -> dict:
@@ -88,6 +92,8 @@ class SessionContext:
             "last_user_message": self.last_user_message,
             "offered_breakdown": self.offered_breakdown,
             "focus_hub_id": self.focus_hub_id,
+            "excluded_hazards": self.excluded_hazards,
+            "score_legend_shown": self.score_legend_shown,
         }
 
     def for_intent_parser(self) -> dict:
@@ -144,6 +150,7 @@ class ResolvedIntent:
     excluded_hazards: list[str] = field(default_factory=list)
     unsupported_window: bool = False
     explain_gap: bool = False
+    show_score_legend: bool = True
 
     def view(self) -> dict:
         return {
@@ -223,6 +230,8 @@ def parse_message(message: str) -> ParsedMessage:
         intent = "methodology"
     elif alerts and not hub_ids and not rank:
         intent = "alerts"
+    elif _bare_why(low):
+        intent = "follow_up"
     elif why and re.search(r"\bwhich\b", low) and not hub_ids:
         intent = "rank_hubs"
     elif why:
@@ -296,6 +305,7 @@ def resolve_intent(parsed: ParsedMessage, context: SessionContext | None) -> Res
     parsed = _fill_compare_partner(parsed, context)
     parsed = _fill_why_lower(parsed, context)
     parsed = _keep_metric_follow_up(parsed, context)
+    parsed = _continue_bare_why(parsed, context)
     if parsed.intent in {"unknown", "follow_up"}:
         return _clarify(
             "I can rank these hubs, compare two of them, look up a weather percentage, or explain a score. What should I look up?",
@@ -558,6 +568,49 @@ def _negated_hazards(low: str) -> list[str]:
 
 def _bare_yes(text: str) -> bool:
     return bool(re.fullmatch(r"(?:yes|yeah|yep|sure|ok|okay)[.!]?", text.strip().lower()))
+
+
+def _bare_why(text: str) -> bool:
+    return bool(re.fullmatch(r"why\??[.!]?", text.strip().lower()))
+
+
+def _continue_bare_why(parsed: ParsedMessage, context: SessionContext) -> ParsedMessage:
+    """'why?' keeps the previous hubs, hazard, exclusion, or day count."""
+    if not _bare_why(parsed.text) or not context.last_intent:
+        return parsed
+    parsed.inherited = True
+    parsed.time_window = parsed.time_window or context.time_window
+    parsed.excluded_hazards = list(context.excluded_hazards)
+    if context.last_intent == "compare_hubs":
+        ordered = list(context.last_result_hub_ids or context.hub_ids)
+        if len(ordered) >= 2:
+            parsed.intent = "explain_hub"
+            parsed.explain_gap = True
+            parsed.hub_ids = ordered[:2]
+            parsed.hazards = list(context.hazards)
+            parsed.hazards_explicit = True
+            parsed.metric = None
+            parsed.region = None
+        return parsed
+    if context.last_intent == "metric_lookup" and context.metric in METRICS:
+        parsed.intent = "metric_lookup"
+        parsed.metric = context.metric
+        parsed.hazards = []
+        parsed.hazards_explicit = False
+        parsed.region = context.region
+        parsed.region_explicit = bool(context.region)
+        parsed.hub_ids = list(context.hub_ids or context.last_result_hub_ids)
+        return parsed
+    if context.last_intent == "rank_hubs":
+        parsed.intent = "rank_hubs"
+        parsed.hub_ids = list(context.hub_ids or context.last_result_hub_ids)
+        parsed.region = context.region
+        parsed.region_explicit = bool(context.region)
+        parsed.hazards = list(context.hazards)
+        parsed.hazards_explicit = bool(context.hazards)
+        parsed.metric = None
+        return parsed
+    return parsed
 
 
 def _asks_why_lower(text: str) -> bool:

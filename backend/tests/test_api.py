@@ -91,8 +91,9 @@ def test_demo_conversation(client):
     assert safer["intent"]["needs_clarification"] is False
     assert safer["intent"]["intent"] == "rank_hubs"
     assert len(safer["evidence"]["rankings"]) == 10
-    assert "is riskier at" in safer["answer"]["answer"].lower()
+    assert "is riskier" in safer["answer"]["answer"].lower()
     assert "is lower" not in safer["answer"]["answer"].lower()
+    assert "Scores:" in safer["answer"]["answer"]
     assert "disruption" in safer["answer"]["answer"].lower()
 
 
