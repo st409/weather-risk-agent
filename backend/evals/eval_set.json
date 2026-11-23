@@ -1518,6 +1518,49 @@
     }
   },
   {
+    "id": "lowest_after_full_ranking_is_los_angeles",
+    "turns": [
+      "Rank all hubs by weather risk",
+      "Which hub has the lowest weather risk?"
+    ],
+    "expect": {
+      "intent": "rank_hubs",
+      "hub_ids": [],
+      "needs_clarification": false,
+      "rankings_count": 10,
+      "answer_contains": [
+        "Los Angeles is the least exposed",
+        "Scores:"
+      ],
+      "answer_excludes": [
+        "Detroit is the least exposed",
+        "is the most exposed"
+      ]
+    }
+  },
+  {
+    "id": "safest_after_highest_and_why_is_los_angeles",
+    "turns": [
+      "Which hub has the highest weather risk?",
+      "why?",
+      "Which hub is the safest?"
+    ],
+    "expect": {
+      "intent": "rank_hubs",
+      "hub_ids": [],
+      "needs_clarification": false,
+      "rankings_count": 10,
+      "answer_contains": [
+        "Los Angeles is the least exposed",
+        "Scores:"
+      ],
+      "answer_excludes": [
+        "Detroit is the least exposed",
+        "is the most exposed"
+      ]
+    }
+  },
+  {
     "id": "lowest_weather_risk_is_los_angeles",
     "turns": [
       "Which hub has the lowest weather risk?"

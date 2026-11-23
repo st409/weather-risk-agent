@@ -84,6 +84,66 @@ def test_safer_without_context_ranks_every_hub():
     assert resolved.safety_framing is True
 
 
+def test_complete_safer_question_does_not_inherit_a_full_ranking():
+    full = [
+        "houston",
+        "newyork",
+        "dallas",
+        "detroit",
+        "chicago",
+        "minneapolis",
+        "atlanta",
+        "miami",
+        "denver",
+        "losangeles",
+    ]
+    ranked = SessionContext(
+        hub_ids=full,
+        last_intent="rank_hubs",
+        last_result_hub_ids=full,
+        last_user_message="Rank all hubs by weather risk",
+    )
+    after_why = SessionContext(
+        hub_ids=["newyork"],
+        focus_hub_id="newyork",
+        last_intent="explain_hub",
+        last_result_hub_ids=full,
+        last_user_message="why?",
+    )
+    for context in (ranked, after_why):
+        for question in (
+            "Which hub has the lowest weather risk?",
+            "Which hub is the safest?",
+        ):
+            resolved = _resolve(question, context)
+            assert resolved.intent == "rank_hubs", question
+            assert resolved.hub_ids == [], question
+            assert resolved.region is None
+            assert resolved.safety_framing is True
+            assert resolved.inherited is False, question
+    short = _resolve("which is safer?", ranked)
+    assert short.intent == "rank_hubs"
+    assert short.hub_ids == []
+    assert short.safety_framing is True
+
+
+def test_and_the_safest_after_a_region_keeps_that_region():
+    context = SessionContext(
+        hub_ids=["minneapolis", "detroit", "chicago"],
+        region="Midwest",
+        hazards=["winter"],
+        last_intent="rank_hubs",
+        last_result_hub_ids=["minneapolis", "detroit", "chicago"],
+    )
+    resolved = _resolve("and the safest?", context)
+    assert resolved.intent == "rank_hubs"
+    assert resolved.region == "Midwest"
+    assert resolved.hub_ids == []
+    assert resolved.safety_framing is True
+    assert resolved.inherited is True
+    assert resolved.hazards == []
+
+
 def test_safer_after_compare_uses_those_hubs():
     context = SessionContext(
         hub_ids=["miami", "houston"],

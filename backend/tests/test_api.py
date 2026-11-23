@@ -284,6 +284,28 @@ def _names_in_order(text: str, names: list[str]) -> bool:
     return True
 
 
+def test_lowest_after_a_ranking_still_names_los_angeles(client):
+    ranked = _chat(client, "Rank all hubs by weather risk")
+    lowest = _chat(client, "Which hub has the lowest weather risk?", ranked["session_id"])
+    _assert_full_safety_ranking(lowest)
+    highest = _chat(client, "Which hub has the highest weather risk?")
+    why = _chat(client, "why?", highest["session_id"])
+    safest = _chat(client, "Which hub is the safest?", why["session_id"])
+    _assert_full_safety_ranking(safest)
+
+
+def _assert_full_safety_ranking(body: dict) -> None:
+    assert body["intent"]["intent"] == "rank_hubs"
+    assert body["intent"]["hub_ids"] == []
+    assert body["evidence"]["safety_framing"] is True
+    names = [row["name"] for row in body["evidence"]["rankings"]]
+    assert len(names) == 10
+    assert names[0] == "Los Angeles"
+    text = body["answer"]["answer"]
+    assert text.startswith("Los Angeles is the least exposed")
+    assert "Detroit is the least exposed" not in text
+
+
 def test_lowest_and_safest_name_los_angeles(client):
     for question in ("Which hub has the lowest weather risk?", "Which hub is the safest?"):
         body = _chat(client, question)

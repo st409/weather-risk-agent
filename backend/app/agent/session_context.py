@@ -373,18 +373,39 @@ def _why_top(parsed: ParsedMessage, context: SessionContext) -> ResolvedIntent:
     return _ok(parsed)
 
 
+def _short_safer_follow_up(text: str) -> bool:
+    """'which is safer?' or 'and the safest?' points at the previous set.
+
+    'Which hub is the safest?' is a new question. It does not.
+    """
+    low = re.sub(r"[?.!]+$", "", text.lower().strip()).strip()
+    if re.search(r"\b(those|these|them|of them|that one|the same|among them)\b", low):
+        return True
+    if re.match(r"^(?:and|so)\b", low):
+        return True
+    if re.search(r"\bhubs?\b", low):
+        return False
+    return bool(
+        re.fullmatch(
+            r"(?:which|what|who)?(?:\s+one)?\s*(?:is|are|'s)?\s*(?:the\s+)?(?:safer|safest|lowest|least)(?:\s+one)?",
+            low,
+        )
+    )
+
+
 def _safer(parsed: ParsedMessage, context: SessionContext) -> ResolvedIntent:
     hubs = list(parsed.hub_ids)
     region = parsed.region
     inherited = False
-    if not hubs and region is None and context.last_intent:
-        inherited = True
+    # A complete question ranks every hub. A short follow-up keeps a comparison
+    # or a regional ranking, and never a previous full ranking sliced to four.
+    if not hubs and region is None and _short_safer_follow_up(parsed.text):
         if context.last_intent == "compare_hubs" and (context.hub_ids or context.last_result_hub_ids):
             hubs = list(context.hub_ids or context.last_result_hub_ids)
+            inherited = True
         elif context.region:
             region = context.region
-        elif context.last_result_hub_ids:
-            hubs = list(context.last_result_hub_ids)
+            inherited = True
     hazards = list(parsed.hazards) if parsed.hazards_explicit else []
     window = parsed.time_window or (context.time_window if inherited else None)
     if len(hubs) >= 2:
