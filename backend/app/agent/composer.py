@@ -2124,19 +2124,38 @@ def _drop_legend_from_reason(text: str, skeleton: str) -> str:
     return f"{reason.rstrip()} {scores.lstrip()}".strip()
 
 
+def _drop_priority_clause(body: str) -> str:
+    """Remove an investment sentence the user did not ask for."""
+    body = re.sub(
+        r"(?i)(?:^|(?<=[.!?]\s))\s*(?:Based on those risk drivers,\s*)?I'?d prioritize\b[^.?!]*[.?!]?",
+        "",
+        body,
+    )
+    body = re.sub(
+        r"(?i),?\s*(?:and\s+)?(?:based on those risk drivers,\s*)?I'?d prioritize\b[^.?!]*",
+        "",
+        body,
+    )
+    body = re.sub(r"\s{2,}", " ", body).strip().rstrip(",;")
+    if body and body[-1] not in ".!?":
+        body += "."
+    return body
+
+
 def _own_investment_sentence(text: str, skeleton: str) -> str:
-    """Keep the recommendation as its own sentence, not a clause on the FEMA line."""
+    """Keep the recommendation only when this question asked where to invest or what to strengthen."""
     match = re.search(r"Based on those risk drivers, I'd prioritize [^.]+\.", skeleton)
+    tail_match = re.search(r"(?i)\b(?:Scores|Sources)\s*:.*", text, flags=re.S)
+    body = text[: tail_match.start()] if tail_match else text
+    tail = tail_match.group(0).strip() if tail_match else ""
     if not match:
-        return text
+        body = _drop_priority_clause(body)
+        return f"{body} {tail}".strip()
     sentence = match.group(0)
     tail_match = re.search(r"(?i)\b(?:Scores|Sources)\s*:.*", text, flags=re.S)
     body = text[: tail_match.start()] if tail_match else text
     tail = tail_match.group(0).strip() if tail_match else ""
-    body = re.sub(r"(?i),?\s*(?:and\s+)?(?:based on those risk drivers\b|I'?d prioritize\b).*", "", body, flags=re.S)
-    body = re.sub(r"\s{2,}", " ", body).strip().rstrip(",;")
-    if body and body[-1] not in ".!?":
-        body += "."
+    body = _drop_priority_clause(body)
     if sentence not in body:
         body = f"{body} {sentence}".strip()
     return f"{body} {tail}".strip()
@@ -2181,9 +2200,17 @@ def _spell_numbers(text: str) -> str:
     return re.sub(rf"\b(?:{tens}|{ones})\b", word, spoken, flags=re.I)
 
 
+def _visible_numbers(text: str) -> str:
+    """17 and seventeen are the same count. 4.7% and 4.7 percent are the same percent."""
+    cleaned = _normalize_degree(text or "")
+    cleaned = re.sub(r"[\u00ad\u200b\u200c\u200d\u2060\ufeff]", "", cleaned)
+    cleaned = re.sub(r"%", " percent", cleaned)
+    return _spell_numbers(cleaned)
+
+
 def _fact_numbers(text: str) -> list[float]:
     found = []
-    for raw in re.findall(r"\d+(?:\.\d+)?", _spell_numbers(_normalize_degree(text or ""))):
+    for raw in re.findall(r"\d+(?:\.\d+)?", _visible_numbers(text)):
         value = float(raw)
         if value in {0, 1, 2, 3, 4, 5, 10, 32, 40, 95, 100, 365} or 2020 <= value <= 2027:
             continue

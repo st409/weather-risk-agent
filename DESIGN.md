@@ -158,7 +158,7 @@ Answers are English only. A message in another language gets one English redirec
 
 Supported time windows are calendar year 2025 and a trailing 365 days. A single month or a custom range is not scored. The reply says those two windows are supported, then answers for calendar year 2025. The previous intent is kept, so a snow-day question stays a snow-day question.
 
-Overall weights are fixed: winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, heat 0.10. Asking to ignore a hazard drops that weight and renormalizes the rest. Business-importance weights stay at 1.0 and are not applied.
+Overall weights are fixed: winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, heat 0.10. These weights are an assumption. In a real system they would be calibrated against the company's downtime days and costs. Asking to ignore a hazard drops that weight and renormalizes the rest. Business-importance weights stay at 1.0 and are not applied.
 
 ## Scope left out
 

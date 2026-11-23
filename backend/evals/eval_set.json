@@ -5,7 +5,7 @@
     "expect": {
       "intent": "rank_hubs",
       "answer_contains": ["Minneapolis", "Detroit", "Chicago", "Scores:", "Sources:", "FEMA NRI", "NWS alerts"],
-      "answer_excludes": ["Miami", "Los Angeles", "not a probability", "Weather-day rates", "other factors", "freeze-day rate", "FEMA winter baseline"],
+      "answer_excludes": ["Miami", "Los Angeles", "not a probability", "Weather-day rates", "other factors", "freeze-day rate", "FEMA winter baseline", "I'd prioritize"],
       "opening_has_no_digits": true,
       "scores_last": true,
       "names_top_hubs": true,
@@ -27,6 +27,7 @@
     "expect": {
       "intent": "compare_hubs",
       "answer_contains": ["Miami hub (South region)", "Houston hub (South region)", "hurricane", "flood", "practically tied", "does not separate"],
+      "answer_excludes": ["I'd prioritize"],
       "score_hazards": ["hurricane", "flood"],
       "has_assumptions": true,
       "has_sources": true
@@ -57,7 +58,7 @@
       "one_sources_line": true,
       "opening_has_no_digits": true,
       "scores_last": true,
-      "answer_excludes": ["not a probability", "Weather-day rates", "other factors"],
+      "answer_excludes": ["not a probability", "Weather-day rates", "other factors", "I'd prioritize"],
       "breakdown_contains": ["heat", "hurricane", "Contributors, largest first"],
       "uncertainties_exclude": ["coastal-flood"],
       "contributors_sum": true,

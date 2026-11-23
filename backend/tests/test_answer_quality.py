@@ -185,9 +185,15 @@ def test_day_count_words_and_a_missing_notice_still_keep_the_draft():
     assert _fact_numbers("seventeen") == [17.0]
     assert _fact_numbers("four point seven percent") == [4.7]
     assert _fact_numbers("four-point-seven percent") == [4.7]
+    assert _fact_numbers("4.7%") == _fact_numbers("4.7 percent")
+    assert _fact_numbers("seven\u00adteen") == [17.0]
     snow = "Denver hub (Mountain region) had 17 snow days (4.7% of the year). A snow day is daily snowfall >= 1 cm."
     spoken_snow = "Denver hub (Mountain region) had seventeen snow days, four point seven percent of the year. A snow day is daily snowfall >= 1 cm."
     assert _draft_is_usable(spoken_snow, {}, [], snow)
+    percent_words = "Denver hub (Mountain region) had seventeen snow days (4.7 percent of the year). A snow day is daily snowfall >= 1 cm."
+    kept_snow = apply_model_prose(AnswerResult(answer=snow), AnswerDraft(answer=percent_words), None, {})
+    assert kept_snow.fallback is False
+    assert kept_snow.rejection_reason is None
     miami = "Houston had 14 heavy-rain days and Miami had 5. Scores: hurricane Houston 80.0, Miami 80.0; flood Houston 44.9, Miami 40.2."
     assert _draft_is_usable(miami.replace("44.9", "44.9, about forty-five"), {}, [], miami)
     assert _draft_is_usable(draft, {}, [], skeleton)
@@ -339,6 +345,24 @@ def test_rank_explains_second_and_third(client):
     assert not any(char.isdigit() for char in text.split(".", 1)[0])
 
 
+def test_compare_does_not_invent_a_priority(client):
+    body = _chat(client, "Compare Miami and Houston in terms of hurricane and flood exposure.")
+    assert "I'd prioritize" not in body["answer"]["answer"]
+    skeleton = (
+        "Houston hub (South region) is more exposed to flood than Miami hub (South region). "
+        "Scores: flood Houston 44.9, Miami 40.2."
+    )
+    draft = (
+        "Houston hub (South region) is more exposed to flood than Miami hub (South region). "
+        "I'd prioritize Houston for flood exposure. "
+        "Scores: flood Houston 44.9, Miami 40.2."
+    )
+    shown = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=draft), None, {})
+    assert shown.fallback is False
+    assert "I'd prioritize" not in shown.answer
+    assert "44.9" in shown.answer
+
+
 def test_investment_recommendation_is_its_own_sentence():
     skeleton = (
         "New York/Newark is the most vulnerable hub to weather disruption. "
@@ -370,6 +394,9 @@ def test_where_to_invest_suggests_from_the_leaders_drivers(client):
     assert "cost" not in text.lower()
     strengthened = _chat(client, "What should we strengthen in Miami?")
     miami = strengthened["answer"]["answer"]
+    prioritized = _chat(client, "What should we prioritize?")
+    assert prioritized["intent"]["intent"] == "rank_hubs"
+    assert "Based on those risk drivers, I'd prioritize" in prioritized["answer"]["answer"]
     assert strengthened["intent"]["intent"] == "explain_hub"
     assert "Miami" in miami
     assert "Based on those risk drivers, I'd prioritize" in miami

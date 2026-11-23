@@ -196,7 +196,7 @@ def parse_message(message: str) -> ParsedMessage:
     asks_why_top = bool(why and not hub_ids and re.search(r"\b(top|first|highest|that one)\b", low))
     metric_q = _is_metric_question(low)
     compare = bool(re.search(r"\b(compare|comparison|versus|vs\.?|between)\b", low))
-    investment = bool(re.search(r"\b(?:invest\w*|strengthen\w*)\b", low))
+    investment = bool(re.search(r"\b(?:invest\w*|strengthen\w*|prioriti[sz]\w*)\b", low))
     rank = bool(re.search(r"\b(which|most|least|ranking|rank|highest|lowest|exposed|riskiest|safest|safer)\b", low))
     refers = _refers_back(low)
     followish = bool(refers or re.search(r"מה לגבי|ומה לגבי", low)) or (
