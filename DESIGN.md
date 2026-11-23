@@ -2,6 +2,8 @@
 
 ## Architecture
 
+The system consists of a React frontend and a Python FastAPI backend. The backend orchestrates user requests, retrieves weather and hazard data, calculates deterministic risk scores, and uses an LLM for intent understanding and answer generation. The LLM cannot modify the calculated scores. All model outputs are schema-validated, with a deterministic fallback to ensure reliable responses. SQLite stores cached data, score snapshots, and runtime conversation context.
+
 ```mermaid
 flowchart TD
   User["User"] --> ChatUI["Chat UI"]
