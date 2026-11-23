@@ -56,6 +56,8 @@ def deterministic_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> 
     if resolved.intent == "compare_hubs":
         return _compare_answer(resolved, ordered)
     if resolved.intent == "explain_hub":
+        if resolved.subject_hub_id:
+            return _relative_hub_answer(resolved, ordered)
         return _explain_answer(resolved, ordered)
     return _rank_answer(resolved, ordered)
 
@@ -432,7 +434,7 @@ def _count_fact(report: HubReport, metric_name: str, peers: list[HubReport]) -> 
     count = int(getattr(report.metrics, count_name) or 0)
     valid = int(getattr(report.metrics, valid_name) or 0)
     year = "2025" if str(report.window_start).startswith("2025") or "2025" in report.window_label else report.window_label
-    text = f"In {year} it had {count} {noun}"
+    text = f"In {year} {report.name} had {count} {noun}"
     if valid and metric_name == "freeze_days_pct" and count / valid >= 1 / 3:
         text += ", more than a third of the year"
     if peers and all(count >= int(getattr(other.metrics, count_name) or 0) for other in peers):
@@ -529,7 +531,7 @@ def _plain_clause(report: HubReport, driver, peers: list[HubReport]) -> str:
         return counted
     hazard = _BASELINE_HAZARD.get(driver.metric_name)
     if hazard and driver.value is not None and float(driver.value) >= 50:
-        return f"FEMA rates it a high historical {hazard}-risk area"
+        return f"FEMA rates {report.name} a high historical {hazard}-risk area"
     if str(driver.metric_name).endswith("_alert_score") and report.active_events:
         return f"an active {_join(report.active_events)} alert"
     return ""
@@ -1133,7 +1135,7 @@ def _renormalized(report: HubReport, excluded: list[str]) -> tuple[float, list[t
 def _renorm_sentence(excluded: list[str], total: float, parts: list[tuple[str, float, float]]) -> str:
     shown = _allocate_tenths([contribution for _name, _score, contribution in parts], total)
     bits = [
-        f"{HAZARD_LABEL[name]} {_n(score)} → {points:.1f} of the {_n(total)} points"
+        f"{HAZARD_LABEL[name]}: {points:.1f} of the {_n(total)} points"
         for (name, score, _contribution), points in zip(parts, shown)
     ]
     dropped = _join([HAZARD_LABEL[name] for name in excluded])
@@ -1371,7 +1373,7 @@ def _display_amounts(report: HubReport, hazards: list[str], total: float) -> tup
         if driver.metric_name in HURRICANE_DRIVERS and not report.hurricane_published and "hurricane" not in hazards:
             hidden += driver.contribution
             continue
-        labels.append(f"{_short_driver(driver)} {_driver_value(driver)}")
+        labels.append(_rating_label(_short_driver(driver)))
         amounts.append(driver.contribution)
     if amounts and hidden:
         amounts[0] += hidden
@@ -1404,12 +1406,20 @@ def _contributor_sentence(report: HubReport, hazards: list[str], total: float) -
     if not labels:
         return ""
     shown = _allocate_tenths(amounts, total)
-    parts = [f"{label} → {points:.1f} of the {_n(total)} points" for label, points in zip(labels, shown)]
+    parts = [f"{_rating_label(label)}: {points:.1f} of the {_n(total)} points" for label, points in zip(labels, shown)]
     return f"Contributors, largest first: {_join(parts)}. These points sum to {_n(total)}."
 
 
 def _short_driver(driver) -> str:
     return DRIVER_PLAIN.get(driver.metric_name, driver.metric_name.replace("_", " ")).removeprefix("the ")
+
+
+def _rating_label(label: str) -> str:
+    """Breakdowns say 'FEMA winter risk rating: 19.5 of the 72.3 points' instead of an arrow."""
+    match = re.fullmatch(r"FEMA (.+) baseline", label)
+    if match:
+        return f"FEMA {match.group(1)} risk rating"
+    return label
 
 
 BASELINE_METRIC = {
@@ -1650,7 +1660,10 @@ def _gap_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> AnswerRes
     text = _finish_text(
         resolved,
         [leader, other],
-        [_gap_sentence(leader, other, resolved.hazards, seen, resolved), _scores_line(resolved, [leader, other])],
+        [
+            _edge_out_sentence(leader, other, resolved) if resolved.rank_gap else _gap_sentence(leader, other, resolved.hazards, seen, resolved),
+            _scores_line(resolved, [leader, other]),
+        ],
     )
     return _pack(resolved, [leader, other], text, [], _followups_for(resolved, [leader, other]))
 
@@ -1686,6 +1699,198 @@ _GAP_SPEAK = {
     "95 f day rate": ("days reaching 95 F", "Heat days", "heat_days_pct"),
     "100 f day rate": ("extreme heat days", "Extreme heat", "extreme_heat_days_pct"),
 }
+
+
+def _edge_out_sentence(leader: HubReport, other: HubReport, resolved: ResolvedIntent) -> str:
+    """Why the first hub leads the second: the largest contributor gaps, not the ranking restated."""
+    if _n(_rank_score(resolved, leader)) == _n(_rank_score(resolved, other)):
+        return f"{leader.name} and {other.name} are effectively tied."
+    phrases = []
+    for _gap, phrase in _contributor_gaps(leader, other, resolved):
+        if not phrase:
+            continue
+        phrases.append(phrase)
+        if len(phrases) == 2:
+            break
+    because = _join(phrases) if phrases else "of its higher exposure"
+    if phrases and not phrases[0].startswith("it "):
+        because = f"of {because}"
+    sentence = f"{leader.name} edges out {other.name} mainly because {because}"
+    shared = _shared_baseline(leader, other, resolved)
+    if shared:
+        sentence += f"; {shared}"
+    return sentence + "."
+
+
+def _contributor_gaps(leader: HubReport, other: HubReport, resolved: ResolvedIntent) -> list[tuple[float, str]]:
+    hazards = resolved.hazards or ["overall"]
+    found: list[tuple[float, str]] = []
+    if resolved.excluded_hazards:
+        _leader_total, leader_parts = _renormalized(leader, resolved.excluded_hazards)
+        _other_total, other_parts = _renormalized(other, resolved.excluded_hazards)
+        other_map = {name: contribution for name, _score, contribution in other_parts}
+        for name, _score, left in leader_parts:
+            if name in resolved.excluded_hazards:
+                continue
+            right = other_map.get(name, 0.0)
+            gap = left - right
+            if gap > 0.05:
+                found.append((gap, f"higher {HAZARD_LABEL[name]} exposure ({left:.1f} vs {right:.1f} points)"))
+        found.sort(key=lambda item: item[0], reverse=True)
+        return found
+    leader_drivers = {driver.metric_name: driver for driver in _ranked_drivers(leader, hazards)}
+    other_drivers = {driver.metric_name: driver for driver in _ranked_drivers(other, hazards)}
+    for metric_name, left in leader_drivers.items():
+        if metric_name in HURRICANE_DRIVERS and not leader.hurricane_published and "hurricane" not in resolved.hazards:
+            continue
+        right = other_drivers.get(metric_name)
+        if right is None:
+            continue
+        gap = left.contribution - right.contribution
+        if gap <= 0.05:
+            continue
+        phrase = _driver_gap_phrase(leader, other, left, right)
+        if phrase:
+            found.append((gap, phrase))
+    found.sort(key=lambda item: item[0], reverse=True)
+    return found
+
+
+def _driver_gap_phrase(leader: HubReport, other: HubReport, left, right) -> str:
+    metric = str(left.metric_name)
+    counted = _COUNT_FIELDS.get(metric)
+    if counted:
+        count_name, noun = counted
+        leader_count = int(getattr(leader.metrics, count_name) or 0)
+        other_count = int(getattr(other.metrics, count_name) or 0)
+        if leader_count <= other_count:
+            return ""
+        if metric == "snow_days_pct":
+            return "a higher snow-day rate"
+        return f"it had more {noun} ({leader_count} vs {other_count})"
+    if metric in _BASELINE_HAZARD and left.value is not None and right.value is not None:
+        leader_value = float(left.value)
+        other_value = float(right.value)
+        if leader_value >= 50 and other_value >= 50:
+            return ""
+        if leader_value <= other_value:
+            return ""
+        hazard = _BASELINE_HAZARD[metric]
+        return f"a higher FEMA {hazard} risk rating ({_n(leader_value)} vs {_n(other_value)})"
+    if metric.endswith("_score"):
+        label = HAZARD_LABEL.get(metric.removesuffix("_score"), _short_driver(left))
+        return f"higher {label} exposure ({left.contribution:.1f} vs {right.contribution:.1f} points)"
+    return ""
+
+
+def _shared_baseline(leader: HubReport, other: HubReport, resolved: ResolvedIntent) -> str:
+    if len(resolved.hazards) != 1:
+        return ""
+    hazard = resolved.hazards[0]
+    metric = BASELINE_METRIC.get(hazard)
+    if not metric:
+        return ""
+    left = _find_driver(leader, hazard, metric)
+    right = _find_driver(other, hazard, metric)
+    if left is None or right is None or left.value is None or right.value is None:
+        return ""
+    if float(left.value) < 50 or float(right.value) < 50:
+        return ""
+    label = "severe-storm" if hazard == "severe_storm" else HAZARD_LABEL[hazard]
+    return f"both are rated high {label}-risk by FEMA"
+
+
+def _relative_hub_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> AnswerResult:
+    ordered = _order_for(resolved, reports)
+    subject = next((report for report in ordered if report.hub_id == resolved.subject_hub_id), ordered[0])
+    text = _finish_text(resolved, ordered, [_relative_opening(resolved, ordered, subject), _scores_line(resolved, ordered)])
+    return _pack(resolved, ordered, text, [], _followups_for(resolved, ordered))
+
+
+def _relative_opening(resolved: ResolvedIntent, ordered: list[HubReport], subject: HubReport) -> str:
+    count = len(ordered)
+    index = ordered.index(subject)
+    from_top = index if not resolved.safety_framing else count - 1 - index
+    if from_top == 0:
+        rank = "the most exposed"
+    elif from_top == count - 1:
+        rank = "the least exposed"
+    elif from_top == 1:
+        rank = "the second most exposed"
+    else:
+        rank = f"number {from_top + 1} for exposure"
+    place = _group_phrase(resolved.region, count)
+    opening = f"{subject.name} is {rank} of {place}"
+    counted = _follow_count(subject, resolved)
+    fema = _high_fema(subject, resolved)
+    least = from_top == count - 1
+    if least:
+        sentence = opening
+        if fema:
+            sentence += f", though {fema}"
+        if counted:
+            sentence += f"; {counted}"
+        return sentence + "."
+    parts = [opening + "."]
+    if fema:
+        parts.append(fema.replace("FEMA still rates it", f"FEMA rates {subject.name}", 1) + ".")
+    if counted:
+        parts.append(counted[0].upper() + counted[1:] + ".")
+    return " ".join(parts)
+
+
+def _group_phrase(region: str | None, count: int) -> str:
+    words = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+    word = words.get(count, str(count))
+    if region:
+        return f"the {word} {region} hubs"
+    return f"the {word} hubs"
+
+
+def _high_fema(report: HubReport, resolved: ResolvedIntent) -> str:
+    hazard = resolved.hazards[0] if len(resolved.hazards) == 1 else ""
+    if not hazard:
+        best: tuple[float, str] | None = None
+        for name, metric in BASELINE_METRIC.items():
+            driver = _find_driver(report, name, metric)
+            if driver is None or driver.value is None or float(driver.value) < 50:
+                continue
+            if best is None or float(driver.value) > best[0]:
+                best = (float(driver.value), name)
+        if best is None:
+            return ""
+        hazard = best[1]
+    metric = BASELINE_METRIC.get(hazard)
+    if not metric:
+        return ""
+    driver = _find_driver(report, hazard, metric)
+    if driver is None or driver.value is None or float(driver.value) < 50:
+        return ""
+    label = "severe-storm" if hazard == "severe_storm" else HAZARD_LABEL.get(hazard, hazard)
+    return f"FEMA still rates it a high historical {label}-risk area"
+
+
+def _follow_count(report: HubReport, resolved: ResolvedIntent) -> str:
+    preferred = {
+        "winter": "freeze_days_pct",
+        "flood": "heavy_rain_days_pct",
+        "heat": "heat_days_pct",
+        "severe_storm": "high_wind_days_pct",
+    }
+    metrics = [preferred[hazard] for hazard in resolved.hazards if hazard in preferred]
+    if not metrics:
+        metrics = list(preferred.values())
+    year = "2025" if str(report.window_start).startswith("2025") or "2025" in report.window_label else report.window_label
+    for metric in metrics:
+        spec = _COUNT_FIELDS.get(metric)
+        if spec is None:
+            continue
+        count_name, noun = spec
+        count = int(getattr(report.metrics, count_name) or 0)
+        if count <= 0:
+            continue
+        return f"it had {count} {noun} in {year}"
+    return ""
 
 
 def _gap_sentence(leader: HubReport, other: HubReport, hazards: list[str], seen: set[str], resolved: ResolvedIntent) -> str:
@@ -2380,7 +2585,7 @@ def _mainly_clause_problem(text: str, evidence: dict | None) -> str | None:
     if not clauses:
         return None
     breakdown = str((evidence or {}).get("breakdown") or "")
-    arrows = [float(number) for number in re.findall(r"→\s*(-?\d+(?:\.\d+)?)", breakdown)]
+    arrows = [float(number) for number in re.findall(r"(?:→|:)\s*(-?\d+(?:\.\d+)?)", breakdown)]
     hazard_scores: list[float] = []
     for row in (evidence or {}).get("rankings") or []:
         hazard_scores.extend(float(value) for value in (row.get("hazard_scores") or {}).values())
@@ -2438,7 +2643,7 @@ def _name_list(reports: list[HubReport]) -> str:
     names = [report.name for report in reports]
     if len(names) <= 2:
         return _join(names)
-    return ", ".join(names[:-1]) + " and " + names[-1]
+    return _join(names)
 
 
 def _join(items: list[str]) -> str:

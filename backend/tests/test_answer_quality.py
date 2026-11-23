@@ -339,11 +339,40 @@ def test_explain_lists_heat_and_skips_unpublished_hurricane(client):
 def test_rank_explains_second_and_third(client):
     body = _chat(client, "Which hubs in the Midwest are most exposed to winter disruption?")
     text = body["answer"]["answer"]
-    assert text.startswith("Minneapolis, Detroit and Chicago")
+    assert text.startswith("Minneapolis, Detroit, and Chicago")
     assert "Chicago" in text
     assert "Detroit" in text
     assert "Scores:" in text
     assert not any(char.isdigit() for char in text.split(".", 1)[0])
+    assert "FEMA rates it" not in text
+
+
+def test_why_after_a_ranking_explains_the_gap(client):
+    first = _chat(client, "Which hubs in the Midwest are most exposed to winter disruption?")
+    body = _chat(client, "why?", first["session_id"])
+    text = body["answer"]["answer"]
+    assert body["intent"]["intent"] == "explain_hub"
+    assert "edges out" in text
+    assert "Minneapolis" in text and "Detroit" in text
+    assert "freezing days" in text and " vs " in text
+    assert "snow-day rate" in text
+    assert "both are rated high winter-risk by FEMA" in text
+    assert "most exposed to winter disruption, with" not in text
+
+
+def test_single_hub_follow_up_stays_relative_to_the_set(client):
+    first = _chat(client, "Which hubs in the Midwest are most exposed to winter disruption?")
+    body = _chat(client, "and Chicago?", first["session_id"])
+    text = body["answer"]["answer"]
+    assert "least exposed of the three Midwest hubs" in text
+    assert "FEMA still rates it a high historical winter-risk area" in text
+    assert "freezing days in 2025" in text
+    assert "faces high" not in text
+    after_why = _chat(client, "why?", first["session_id"])
+    later = _chat(client, "and Chicago?", after_why["session_id"])
+    later_text = later["answer"]["answer"]
+    assert "least exposed of the three Midwest hubs" in later_text
+    assert "faces high" not in later_text
 
 
 def test_compare_does_not_invent_a_priority(client):

@@ -560,7 +560,7 @@
       "intent": "rank_hubs",
       "rankings_count": 5,
       "answer_contains": ["Houston", "62.4", "Sources:"],
-      "answer_regex": "Houston, Atlanta and Miami are the most exposed to flood disruption[\\s\\S]*Scores: Houston 62\\.4",
+      "answer_regex": "Houston, Atlanta, and Miami are the most exposed to flood disruption[\\s\\S]*Scores: Houston 62\\.4",
       "opening_has_no_digits": true,
       "answer_excludes": ["Chicago", "Minneapolis", "Los Angeles"]
     }
@@ -731,12 +731,12 @@
     "id": "why_after_excluded_rank_keeps_renormalized_score",
     "turns": ["What's the riskiest hub if we ignore flood?", "why?"],
     "expect": {
-      "intent": "rank_hubs",
-      "answer_contains": ["removing", "flood", "remaining drivers", "hurricane", "winter", "51.4", "Scores:"],
-      "answer_excludes": ["50.6", "(higher = more exposed)", "because of flood", "heavy-rain", "flood-risk", "historical flood"],
+      "intent": "explain_hub",
+      "hub_ids": ["newyork", "houston"],
+      "answer_contains": ["edges out", "mainly because", "winter", "51.4", "Scores:"],
+      "answer_excludes": ["50.6", "(higher = more exposed)", "because of flood", "heavy-rain", "flood-risk", "historical flood", "most exposed hub after removing"],
       "scores_are_renormalized": true,
-      "excluded_hazards": ["flood"],
-      "opening_has_no_digits": true
+      "excluded_hazards": ["flood"]
     }
   },
   {

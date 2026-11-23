@@ -260,7 +260,7 @@ def _gap_match_errors(text: str, breakdown: str) -> list[str]:
     match = re.search(r"contributes (\d+(?:\.\d+)?) vs (\d+(?:\.\d+)?)", text)
     if match is None:
         return ["missing contribution gap"]
-    arrows = [float(number) for number in re.findall(r"→\s*(-?\d+(?:\.\d+)?)", breakdown)]
+    arrows = [float(number) for number in re.findall(r"(?:→|:)\s*(-?\d+(?:\.\d+)?)", breakdown)]
     errors = []
     for raw in match.groups():
         value = float(raw)
@@ -280,7 +280,7 @@ def _contributor_errors(blob: str) -> list[str]:
         return ["missing full contributor list"]
     errors = []
     for chunk, total_text in matches:
-        parts = [float(number) for number in re.findall(r"→\s*(-?\d+(?:\.\d+)?)", chunk)]
+        parts = [float(number) for number in re.findall(r"(?:→|:)\s*(-?\d+(?:\.\d+)?)", chunk)]
         total = float(total_text)
         if not parts or abs(sum(parts) - total) > 0.05:
             errors.append(f"contributors {sum(parts) if parts else 0} != {total}")
@@ -318,7 +318,7 @@ def _mainly_clause_errors(text: str, breakdown: str) -> list[str]:
     )
     if not clauses:
         return ["missing mainly contribution clause"]
-    arrows = [float(number) for number in re.findall(r"→\s*(-?\d+(?:\.\d+)?)", breakdown)]
+    arrows = [float(number) for number in re.findall(r"(?:→|:)\s*(-?\d+(?:\.\d+)?)", breakdown)]
     errors = []
     for match in clauses:
         left, right, total = (float(match.group(index)) for index in (1, 2, 3))
@@ -369,7 +369,7 @@ def _parenthetical_contribution_errors(text: str, breakdown: str, rankings: list
     numbers = [float(number) for number in re.findall(r"\((\d+(?:\.\d+)?)\)", text)]
     if len(numbers) < 2:
         return ["missing contributor points"]
-    arrows = [float(number) for number in re.findall(r"→\s*(-?\d+(?:\.\d+)?)", breakdown)]
+    arrows = [float(number) for number in re.findall(r"(?:→|:)\s*(-?\d+(?:\.\d+)?)", breakdown)]
     hazard_scores = []
     for row in rankings:
         hazard_scores.extend(float(value) for value in (row.get("hazard_scores") or {}).values())

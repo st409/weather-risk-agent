@@ -330,9 +330,11 @@ def test_bare_why_after_exclusion_keeps_the_filter():
         excluded_hazards=["flood"],
     )
     resolved = _resolve("why?", context)
-    assert resolved.intent == "rank_hubs"
+    assert resolved.intent == "explain_hub"
+    assert resolved.explain_gap is True
+    assert resolved.rank_gap is True
     assert resolved.excluded_hazards == ["flood"]
-    assert resolved.hub_ids[0] == "newyork"
+    assert resolved.hub_ids == ["newyork", "houston"]
 
 
 def test_bare_why_after_a_day_count_stays_on_that_count():

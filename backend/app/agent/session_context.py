@@ -129,6 +129,8 @@ class ParsedMessage:
     ordinal_index: int | None = None
     unsupported_window: bool = False
     explain_gap: bool = False
+    rank_gap: bool = False
+    subject_hub_id: str | None = None
     asks_investment: bool = False
     text: str = ""
 
@@ -151,6 +153,8 @@ class ResolvedIntent:
     excluded_hazards: list[str] = field(default_factory=list)
     unsupported_window: bool = False
     explain_gap: bool = False
+    rank_gap: bool = False
+    subject_hub_id: str | None = None
     asks_investment: bool = False
     show_score_legend: bool = True
 
@@ -314,6 +318,7 @@ def resolve_intent(parsed: ParsedMessage, context: SessionContext | None) -> Res
     parsed = _fill_why_lower(parsed, context)
     parsed = _keep_metric_follow_up(parsed, context)
     parsed = _continue_bare_why(parsed, context)
+    parsed = _relative_hub_follow_up(parsed, context)
     if parsed.intent in {"unknown", "follow_up"}:
         return _clarify(
             "I can rank these hubs, compare two of them, look up a weather percentage, or explain a score. What should I look up?",
@@ -503,7 +508,12 @@ def _slot_problem(parsed: ParsedMessage) -> str | None:
         return "Which two hubs should I compare?"
     if parsed.intent == "explain_hub" and len(parsed.hub_ids) == 0:
         return "Which hub should I explain?"
-    if parsed.intent == "explain_hub" and len(parsed.hub_ids) > 1 and not parsed.explain_gap:
+    if (
+        parsed.intent == "explain_hub"
+        and len(parsed.hub_ids) > 1
+        and not parsed.explain_gap
+        and not parsed.subject_hub_id
+    ):
         parsed.intent = "compare_hubs"
         return None
     if parsed.intent == "metric_lookup" and parsed.metric not in METRICS:
@@ -527,6 +537,8 @@ def _ok(parsed: ParsedMessage) -> ResolvedIntent:
         excluded_hazards=list(parsed.excluded_hazards),
         unsupported_window=parsed.unsupported_window,
         explain_gap=parsed.explain_gap,
+        rank_gap=parsed.rank_gap,
+        subject_hub_id=parsed.subject_hub_id,
         asks_investment=parsed.asks_investment,
     )
 
@@ -614,14 +626,47 @@ def _continue_bare_why(parsed: ParsedMessage, context: SessionContext) -> Parsed
         parsed.hub_ids = list(context.hub_ids or context.last_result_hub_ids)
         return parsed
     if context.last_intent == "rank_hubs":
-        parsed.intent = "rank_hubs"
-        parsed.hub_ids = list(context.hub_ids or context.last_result_hub_ids)
+        ordered = list(context.last_result_hub_ids or context.hub_ids)
+        parsed.excluded_hazards = list(context.excluded_hazards)
         parsed.region = context.region
         parsed.region_explicit = bool(context.region)
         parsed.hazards = list(context.hazards)
         parsed.hazards_explicit = bool(context.hazards)
         parsed.metric = None
+        if len(ordered) >= 2:
+            parsed.intent = "explain_hub"
+            parsed.explain_gap = True
+            parsed.rank_gap = True
+            parsed.hub_ids = ordered[:2]
+        else:
+            parsed.intent = "rank_hubs"
+            parsed.hub_ids = ordered
         return parsed
+    return parsed
+
+
+def _relative_hub_follow_up(parsed: ParsedMessage, context: SessionContext) -> ParsedMessage:
+    """'and Chicago?' keeps the ranked set and describes that hub inside it."""
+    if context.last_intent not in {"rank_hubs", "compare_hubs", "explain_hub"}:
+        return parsed
+    if parsed.intent != "explain_hub" or len(parsed.hub_ids) != 1 or not _hub_only_follow_up(parsed):
+        return parsed
+    ordered = list(context.last_result_hub_ids or context.hub_ids)
+    subject = parsed.hub_ids[0]
+    if subject not in ordered or len(ordered) < 2:
+        return parsed
+    parsed.subject_hub_id = subject
+    parsed.hub_ids = ordered
+    parsed.inherited = True
+    if not parsed.hazards_explicit:
+        parsed.hazards = list(context.hazards)
+        parsed.hazards_explicit = bool(parsed.hazards)
+    if context.excluded_hazards:
+        parsed.excluded_hazards = list(context.excluded_hazards)
+    if not parsed.region_explicit:
+        parsed.region = context.region
+    if parsed.time_window is None:
+        parsed.time_window = context.time_window
     return parsed
 
 
