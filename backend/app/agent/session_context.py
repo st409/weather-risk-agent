@@ -327,7 +327,26 @@ def resolve_intent(parsed: ParsedMessage, context: SessionContext | None) -> Res
     problem = _slot_problem(parsed)
     if problem:
         return _clarify(problem, parsed)
+    if _drops_carried_hazard(parsed, context):
+        parsed.hazards = []
     return _ok(parsed)
+
+
+def _drops_carried_hazard(parsed: ParsedMessage, context: SessionContext) -> bool:
+    """A new place, with no hazard and no back-reference, is scored overall."""
+    if parsed.hazards_explicit or _refers_back(parsed.text.lower()):
+        return False
+    if parsed.intent not in {"rank_hubs", "compare_hubs"}:
+        return False
+    if len(_find_regions(parsed.text.lower())) > 1:
+        return True
+    previous = set(context.last_result_hub_ids or context.hub_ids)
+    if parsed.region_explicit and parsed.region and parsed.region != context.region and (previous or context.hazards):
+        return True
+    named = set(parsed.hub_ids)
+    if named and previous and not named.issubset(previous):
+        return True
+    return False
 
 
 def _from_ordinal(parsed: ParsedMessage, context: SessionContext) -> ResolvedIntent:
@@ -400,11 +419,18 @@ def _safer(parsed: ParsedMessage, context: SessionContext) -> ResolvedIntent:
     # A complete question ranks every hub. A short follow-up keeps a comparison
     # or a regional ranking, and never a previous full ranking sliced to four.
     if not hubs and region is None and _short_safer_follow_up(parsed.text):
-        if context.last_intent == "compare_hubs" and (context.hub_ids or context.last_result_hub_ids):
-            hubs = list(context.hub_ids or context.last_result_hub_ids)
+        compared = list(context.hub_ids or context.last_result_hub_ids)
+        pair = list(context.last_result_hub_ids or [])
+        if context.last_intent == "compare_hubs" and compared:
+            hubs = compared
             inherited = True
         elif context.region:
             region = context.region
+            inherited = True
+        elif context.last_intent == "explain_hub" and not context.region and len(pair) == 2:
+            # "why?" after a two-hub compare keeps that pair, even though the
+            # last intent is now an explanation of the gap.
+            hubs = pair
             inherited = True
     hazards = list(parsed.hazards) if parsed.hazards_explicit else []
     window = parsed.time_window or (context.time_window if inherited else None)

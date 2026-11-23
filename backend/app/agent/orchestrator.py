@@ -208,7 +208,7 @@ def _merge(rules: ParsedMessage, model_intent, context: SessionContext) -> Parse
         rules.hub_ids = []
     if not rules.region_explicit:
         rules.region = None
-    if not rules.hazards_explicit:
+    if not rules.hazards_explicit and not named_hubs and not rules.region_explicit:
         hazards = [hazard for hazard in model_intent.hazards if hazard in HAZARDS]
         if hazards:
             rules.hazards = hazards

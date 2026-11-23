@@ -177,8 +177,8 @@ def _check(expect: dict, body: dict) -> list[str]:
         errors.append("score legend appears twice")
     errors.extend(_reason_shape_errors(text))
     if expect.get("scores_are_final"):
-        pieces = re.split(r"Scores:", text, maxsplit=1)
-        if len(pieces) != 2 or text.lower().count("scores:") != 1:
+        pieces = re.split(r"Scores(?:\s*\([^)]*\))?:", text, maxsplit=1)
+        if len(pieces) != 2 or len(re.findall(r"scores(?:\s*\([^)]*\))?:", text, re.I)) != 1:
             errors.append("scores line must appear once")
         else:
             line = re.split(r"Sources:|Contributors,", pieces[1], maxsplit=1)[0]
@@ -189,12 +189,13 @@ def _check(expect: dict, body: dict) -> list[str]:
                     errors.append(f"score {number} appears before the scores line")
             if expect.get("scores_match_prose"):
                 score_body = re.sub(r"\(higher = more exposed\)", "", line, flags=re.I)
+                score_body = re.sub(r"^\s*\([^)]*\):\s*", "", score_body)
                 for piece in score_body.split(","):
                     named = re.search(r"(.+?)\s+\d", piece)
                     if named and named.group(1).strip() not in pieces[0]:
                         errors.append(f"scores lists {named.group(1).strip()} but the prose does not")
     if expect.get("scores_last"):
-        match = re.search(r"Scores:.*?(?=\s+Sources:|\s+Based on|\s+Contributors,|$)", text, re.S)
+        match = re.search(r"Scores(?:\s*\([^)]*\))?:.*?(?=\s+Sources:|\s+Based on|\s+Contributors,|$)", text, re.S)
         if match is None:
             errors.append("missing scores line")
         else:
@@ -290,9 +291,10 @@ def _score_order_errors(text: str, rankings: list[dict]) -> list[str]:
     names = [str(row.get("name") or "") for row in rankings]
     if not names or any(not name for name in names):
         return ["rankings have no names"]
-    if "Scores:" not in text:
+    mark = re.search(r"Scores(?:\s*\([^)]*\))?:", text)
+    if mark is None:
         return ["missing scores line"]
-    opening, scores = text.split("Scores:", 1)
+    opening, scores = text[: mark.start()], text[mark.end() :]
     errors = []
     for label, part in (("opening", opening), ("scores line", scores)):
         position = -1

@@ -144,6 +144,58 @@ def test_and_the_safest_after_a_region_keeps_that_region():
     assert resolved.hazards == []
 
 
+def test_safer_after_why_keeps_the_compared_pair():
+    context = SessionContext(
+        hub_ids=["atlanta"],
+        focus_hub_id="atlanta",
+        last_intent="explain_hub",
+        last_result_hub_ids=["dallas", "atlanta"],
+        last_user_message="why?",
+    )
+    resolved = _resolve("which is safer?", context)
+    assert resolved.intent == "compare_hubs"
+    assert resolved.hub_ids == ["dallas", "atlanta"]
+    assert resolved.safety_framing is True
+    complete = _resolve("Which hub is the safest?", context)
+    assert complete.intent == "rank_hubs"
+    assert complete.hub_ids == []
+    assert complete.safety_framing is True
+
+
+def test_new_regions_drop_the_previous_hazard():
+    context = SessionContext(
+        region="Midwest",
+        hazards=["winter"],
+        last_intent="rank_hubs",
+        last_result_hub_ids=["minneapolis", "detroit", "chicago"],
+    )
+    resolved = _resolve("Which West and Mountain hubs have the highest risk?", context)
+    assert resolved.intent == "rank_hubs"
+    assert resolved.hazards == []
+    assert set(resolved.hub_ids) == {"denver", "losangeles"}
+    referred = _resolve("What about floods only?", context)
+    assert referred.hazards == ["flood"]
+
+
+def test_model_hazard_does_not_override_a_new_set():
+    from app.agent.orchestrator import _merge
+    from app.agent.schemas import IntentResult
+
+    rules = parse_message("Which West and Mountain hubs have the highest risk?")
+    model = IntentResult(intent="rank_hubs", hazards=["winter"], hub_ids=["denver", "losangeles"])
+    context = SessionContext(
+        region="Midwest",
+        hazards=["winter"],
+        last_intent="rank_hubs",
+        last_result_hub_ids=["minneapolis", "detroit", "chicago"],
+    )
+    merged = _merge(rules, model, context)
+    assert merged.hazards == []
+    resolved = resolve_intent(merged, context)
+    assert resolved.hazards == []
+    assert resolved.intent == "rank_hubs"
+
+
 def test_safer_after_compare_uses_those_hubs():
     context = SessionContext(
         hub_ids=["miami", "houston"],

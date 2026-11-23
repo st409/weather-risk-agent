@@ -226,21 +226,39 @@ def _scores_line(resolved: ResolvedIntent, reports: list[HubReport], hazard: str
         bits.append(f"{report.name} {_n(value)}")
     if not bits:
         return ""
-    line = "Scores: " + ", ".join(bits)
+    line = _scores_prefix(resolved, hazard) + ": " + ", ".join(bits)
     if resolved.show_score_legend:
         line += " (higher = more exposed)"
     return line + "."
 
 
+def _scores_prefix(resolved: ResolvedIntent, hazard: str | None = None) -> str:
+    """One hazard is named on the Scores line so it is not read as an overall index."""
+    if hazard and hazard != "overall":
+        return f"Scores ({HAZARD_LABEL[hazard]})"
+    if len(resolved.hazards) == 1:
+        return f"Scores ({HAZARD_LABEL[resolved.hazards[0]]})"
+    return "Scores"
+
+
 def _compare_scores_line(resolved: ResolvedIntent, reports: list[HubReport], hazards: list[str]) -> str:
     """Label each hazard when a comparison covers more than one."""
     shown = [hazard for hazard in hazards if hazard != "overall"] or ["overall"]
+    if len(shown) == 1:
+        hazard = shown[0]
+        key = [] if hazard == "overall" else [hazard]
+        ordered = sorted(reports, key=lambda report: report.focus_score(key), reverse=True)
+        bits = [f"{report.name} {_n(report.focus_score(key))}" for report in ordered]
+        line = _scores_prefix(resolved, None if hazard == "overall" else hazard) + ": " + ", ".join(bits)
+        if resolved.show_score_legend:
+            line += " (higher = more exposed)"
+        return line + "."
     groups = []
     for hazard in shown:
         key = [] if hazard == "overall" else [hazard]
         ordered = sorted(reports, key=lambda report: report.focus_score(key), reverse=True)
         bits = [f"{report.name} {_n(report.focus_score(key))}" for report in ordered]
-        groups.append(", ".join(bits) if len(shown) == 1 else f"{HAZARD_LABEL[hazard]} " + ", ".join(bits))
+        groups.append(f"{HAZARD_LABEL[hazard]} " + ", ".join(bits))
     line = "Scores: " + "; ".join(groups)
     if resolved.show_score_legend:
         line += " (higher = more exposed)"
@@ -412,6 +430,8 @@ def _compare_opening(reports: list[HubReport], focus: list[str], seen: set[str],
         return f"{high_name} and {low_name} are effectively tied on {label}."
     if gap <= 1.0:
         return f"{high_name} and {low_name} are practically tied on {label}."
+    if safer:
+        return f"{low_name} is less exposed to {label} than {high_name}."
     return f"{high_name} is more exposed to {label} than {low_name}."
 
 
@@ -587,7 +607,7 @@ def _one_metric_answer(resolved: ResolvedIntent, report: HubReport, payload: dic
     noun = {"snowfall_day_pct": "snow days", "freeze_day_pct": "freezing days"}.get(resolved.metric or "", payload["label"].lower())
     threshold = _metric_threshold(resolved.metric or "")
     seen: set[str] = set()
-    direct = f"{_mention(report, seen)} had {payload['numerator']} {noun} ({value:.1f}% of the year). {threshold}"
+    direct = f"{_mention(report, seen)} had {payload['numerator']} {noun} ({_day_share(report, value)}). {threshold}"
     text = _finish_text(resolved, [report], [direct])
     findings = [
         f"{payload['label']}: {value:.1f}%",
@@ -623,6 +643,13 @@ def _metric_group_answer(resolved: ResolvedIntent, packed: list[tuple[HubReport,
     findings = [f"{payload['hub_name']}: {payload['numerator']} days, {payload['value']:.1f}%" for _report, payload in packed[:5]]
     answer = _base(resolved, reports[:5], text, findings, _followups_for(resolved, reports[:3]))
     return answer.model_copy(update={"scores": [_metric_score(report, payload) for report, payload in packed]})
+
+
+def _day_share(report: HubReport, value: float) -> str:
+    """Name the trailing-365 window instead of calling that count a share of the year."""
+    if "trailing 365" in (report.window_label or ""):
+        return f"{value:.1f}% of the trailing 365 days"
+    return f"{value:.1f}% of the year"
 
 
 def _metric_score(report: HubReport, payload: dict) -> ScoreItem:
@@ -963,7 +990,7 @@ def _strip_hub_region_labels(text: str) -> str:
 
 def _dedupe_sentences(text: str) -> str:
     """Drop a second copy of the same sentence. Scores and Sources stay put."""
-    match = re.search(r"(?is)\b(?:Scores|Sources)\s*:.*", text or "")
+    match = re.search(rf"(?is)\b(?:{_SCORES_HEAD}|Sources\s*:).*", text or "")
     body = text[: match.start()] if match else (text or "")
     tail = match.group(0) if match else ""
     kept = []
@@ -1182,17 +1209,23 @@ def _short_separator(reports: list[HubReport], hazards: list[str]) -> str:
 
 
 
+def _alert_phrase(event: str) -> str:
+    match = re.match(r"(.+) \(([^)]+)\)$", event)
+    if match:
+        return f"a {match.group(2).lower()} {match.group(1)}"
+    return event
+
+
 def _alert_implications(items: list[HubAlerts]) -> str:
     bits = []
     for item in items:
-        for event in item.batch.events[:1]:
-            match = re.match(r"(.+) \(([^)]+)\)$", event)
-            if match:
-                shown = f"a {match.group(2).lower()} {match.group(1)}"
-            else:
-                shown = event
-            bits.append(f"{item.name} has {shown} active now — short-term, not reflected in the annual score.")
-    return " ".join(bits[:2])
+        phrases = [_alert_phrase(event) for event in item.batch.events]
+        if phrases:
+            bits.append(f"{item.name} has {_join(phrases)} active now.")
+    if not bits:
+        return ""
+    bits.append("Active alerts are a current snapshot, and they do affect the current score.")
+    return " ".join(bits)
 
 
 def alerts_answer(items: list[HubAlerts]) -> AnswerResult:
@@ -1208,7 +1241,9 @@ def alerts_answer(items: list[HubAlerts]) -> AnswerResult:
             parts.append("No active alerts for the other hubs.")
     elif loaded:
         scope = f" for {_join([item.name for item in loaded])}" if len(loaded) <= 3 else ""
-        parts.append(f"No active NWS alerts{scope}.")
+        parts.append(
+            f"No active NWS alerts{scope}. Active alerts are a current snapshot, and they do affect the current score."
+        )
     if failed:
         parts.append(f"NWS alerts could not be loaded for {_join(failed)}.")
     text = " ".join(parts)
@@ -1216,7 +1251,7 @@ def alerts_answer(items: list[HubAlerts]) -> AnswerResult:
     return AnswerResult(
         answer=text,
         key_findings=[f"{item.name}: {', '.join(item.batch.events) or 'none'}" for item in items[:6]],
-        assumptions=["Active alerts are a current snapshot and are not part of the annual score."],
+        assumptions=["Active alerts are a current snapshot, and they do affect the current score."],
         uncertainties=["National Weather Service alerts are only the alerts active now."],
         sources=_source_items_from([item.batch.source for item in items]),
         follow_up_questions=[
@@ -1907,15 +1942,21 @@ def _scope_sentence(resolved: ResolvedIntent, reports: list[HubReport]) -> str:
 
 
 
+_SCORES_HEAD = r"Scores(?:\s*\([^)]*\))?\s*:"
+
+
 def _scores_clause(text: str) -> str | None:
-    match = re.search(r"Scores:(.*?)(?=\s+Sources:|\s+Contributors,|$)", text, re.S)
+    match = re.search(rf"{_SCORES_HEAD}(.*?)(?=\s+Sources:|\s+Contributors,|$)", text, re.S)
     if match is None:
         return None
     return match.group(1).strip()
 
 
 def _before_scores(text: str) -> str:
-    return text.split("Scores:", 1)[0]
+    match = re.search(rf"(?i)\b{_SCORES_HEAD}", text)
+    if match is None:
+        return text
+    return text[: match.start()]
 
 
 
@@ -1936,7 +1977,11 @@ def _strip_model_closers(text: str) -> str:
     cleaned = text
     for _ in range(4):
         previous = cleaned
-        cleaned = re.sub(r"(?is)\s*\bScores\s*:.*?(?=(?:\bSources\s*:)|(?:\bScores\s*:)|\Z)", "", cleaned)
+        cleaned = re.sub(
+            rf"(?is)\s*\b{_SCORES_HEAD}.*?(?=(?:\bSources\s*:)|(?:\b{_SCORES_HEAD})|\Z)",
+            "",
+            cleaned,
+        )
         cleaned = re.sub(r"(?is)\s*\bSources\s*:.*?(?=(?:\bScores\s*:)|(?:\bSources\s*:)|\Z)", "", cleaned)
         if cleaned == previous:
             break
@@ -1945,7 +1990,7 @@ def _strip_model_closers(text: str) -> str:
 
 def _append_skeleton_closers(text: str, skeleton: str) -> str:
     cleaned = text.strip()
-    scores = re.search(r"(?is)\bScores\s*:.*?(?=\s+Sources:|$)", skeleton)
+    scores = re.search(rf"(?is)\b{_SCORES_HEAD}.*?(?=\s+Sources:|$)", skeleton)
     if scores:
         cleaned = f"{cleaned.rstrip()} {scores.group(0).strip()}".strip()
     sources = re.search(r"(?is)\bSources\s*:.*", skeleton)
@@ -1971,7 +2016,7 @@ def _prepare_draft(text: str, skeleton: str) -> str:
 
 
 def _split_scores(text: str) -> tuple[str, str]:
-    match = re.search(r"(?is)\b(?:Scores|Sources)\s*:.*", text or "")
+    match = re.search(rf"(?is)\b(?:{_SCORES_HEAD}|Sources\s*:).*", text or "")
     if not match:
         return (text or "").strip(), ""
     return text[: match.start()].strip(), match.group(0).strip()
@@ -2106,7 +2151,7 @@ def _own_investment_sentence(text: str, skeleton: str) -> str:
     """Keep the recommendation only when this question asked where to invest or what to strengthen."""
     text = _normalize_apostrophes(text)
     match = re.search(r"Based on those risk drivers, I'd prioritize [^.]+\.", _normalize_apostrophes(skeleton))
-    tail_match = re.search(r"(?i)\b(?:Scores|Sources)\s*:.*", text, flags=re.S)
+    tail_match = re.search(rf"(?i)\b(?:{_SCORES_HEAD}|Sources\s*:).*", text, flags=re.S)
     body = text[: tail_match.start()] if tail_match else text
     tail = tail_match.group(0).strip() if tail_match else ""
     body = _drop_priority_clause(body)

@@ -306,6 +306,94 @@ def _assert_full_safety_ranking(body: dict) -> None:
     assert "Detroit is the least exposed" not in text
 
 
+def test_safer_after_why_stays_on_the_compared_pair(client):
+    compared = _chat(client, "Compare Dallas and Atlanta")
+    why = _chat(client, "why?", compared["session_id"])
+    safer = _chat(client, "which is safer?", why["session_id"])
+    assert safer["intent"]["intent"] == "compare_hubs"
+    assert safer["intent"]["hub_ids"] == ["dallas", "atlanta"]
+    assert safer["evidence"]["safety_framing"] is True
+    text = safer["answer"]["answer"]
+    assert "Atlanta is less exposed" in text
+    assert "47.1" in text and "42.4" in text
+    assert "Los Angeles is the least exposed" not in text
+    fresh = _chat(client, "Compare Dallas and Atlanta")
+    explained = _chat(client, "why?", fresh["session_id"])
+    safest = _chat(client, "Which hub is the safest?", explained["session_id"])
+    _assert_full_safety_ranking(safest)
+
+
+def test_trailing_365_keeps_the_snow_day_count(client):
+    first = _chat(client, "How many snow days did Denver have last year?")
+    follow = _chat(client, "What about the trailing 365 days?", first["session_id"])
+    assert follow["intent"]["intent"] == "metric_lookup"
+    assert follow["intent"]["hub_ids"] == ["denver"]
+    assert follow["intent"]["metric"] == "snowfall_day_pct"
+    assert follow["intent"]["time_window"] == "trailing_365"
+    text = follow["answer"]["answer"]
+    assert "Denver" in text and "snow days" in text
+    assert "trailing 365 days" in text
+    assert "winter score" not in text.lower()
+    assert "of the year" not in text
+
+
+def test_one_hazard_scores_line_names_the_hazard(client):
+    winter = _chat(client, "Which hubs in the Midwest are most exposed to winter disruption?")
+    assert "Scores (winter): Minneapolis 72.3, Detroit 51.2, Chicago 44.5" in winter["answer"]["answer"]
+    heat = _chat(client, "Compare Dallas and Atlanta on heat")
+    assert "Scores (heat):" in heat["answer"]["answer"]
+    overall = _chat(client, "Compare Dallas and Atlanta")
+    assert "Scores: Dallas 47.1, Atlanta 42.4" in overall["answer"]["answer"]
+    assert "Scores (" not in overall["answer"]["answer"]
+
+
+def test_new_regions_do_not_keep_the_previous_hazard(client):
+    winter = _chat(client, "Which hubs in the Midwest are most exposed to winter disruption?")
+    west = _chat(client, "Which West and Mountain hubs have the highest risk?", winter["session_id"])
+    assert west["intent"]["intent"] == "rank_hubs"
+    assert west["intent"]["hazards"] == []
+    assert west["intent"]["hub_ids"] == ["denver", "losangeles"]
+    text = west["answer"]["answer"]
+    assert "weather disruption" in text
+    assert "Scores: Denver 36.1, Los Angeles 26.8" in text
+    assert "Scores (winter)" not in text
+    assert "most exposed to winter" not in text
+
+
+def test_active_alerts_are_listed_and_affect_the_score():
+    from app.agent.composer import alerts_answer
+    from app.risk.types import AlertBatch, HubAlerts, SourceRef
+
+    source = SourceRef(
+        name="National Weather Service active alerts",
+        source_type="live_api",
+        retrieved_at="2026-11-23",
+        uncertainty_note="Active now.",
+    )
+    miami = HubAlerts(
+        hub_id="miami",
+        name="Miami",
+        region="South",
+        batch=AlertBatch(
+            weighted={"flood": 2.0},
+            available=True,
+            count=2,
+            events=["Flood Watch (Severe)", "Coastal Flood Advisory (Minor)"],
+            source=source,
+            fallback=False,
+        ),
+    )
+    answer = alerts_answer([miami])
+    text = answer.answer
+    assert "Flood Watch" in text
+    assert "Coastal Flood Advisory" in text
+    assert "current snapshot" in text
+    assert "do affect the current score" in text
+    assert "not reflected in the annual score" not in text
+    assert "not part of the annual score" not in text
+    assert all("not part of the annual score" not in item for item in answer.assumptions)
+
+
 def test_lowest_and_safest_name_los_angeles(client):
     for question in ("Which hub has the lowest weather risk?", "Which hub is the safest?"):
         body = _chat(client, question)

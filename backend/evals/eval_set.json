@@ -10,7 +10,7 @@
         "Minneapolis",
         "Detroit",
         "Chicago",
-        "Scores:",
+        "Scores (winter):",
         "Sources:",
         "FEMA NRI",
         "NWS alerts"
@@ -694,13 +694,17 @@
         "denver"
       ],
       "answer_contains": [
+        "Denver",
+        "snow days",
+        "trailing 365 days",
         "last 365 days",
         "Sources:"
       ],
       "one_sources_line": true,
       "answer_excludes": [
         "Contributors",
-        "winter score"
+        "winter score",
+        "of the year"
       ]
     }
   },
@@ -813,7 +817,7 @@
         "vs",
         "Minneapolis",
         "Detroit",
-        "Scores:"
+        "Scores (winter):"
       ],
       "answer_excludes": [
         "is lower at",
@@ -963,7 +967,7 @@
         "62.4",
         "Sources:"
       ],
-      "answer_regex": "Houston, Atlanta, and Miami are the most exposed to flood disruption[\\s\\S]*Scores: Houston 62\\.4",
+      "answer_regex": "Houston, Atlanta, and Miami are the most exposed to flood disruption[\\s\\S]*Scores \\(flood\\): Houston 62\\.4",
       "opening_has_no_digits": true,
       "answer_excludes": [
         "Chicago",
@@ -1103,7 +1107,7 @@
         "Houston",
         "Miami",
         "80.0",
-        "Scores:"
+        "Scores (hurricane):"
       ],
       "answer_excludes": [
         "is lower",
@@ -1290,7 +1294,7 @@
         "44.5",
         "121",
         "90",
-        "Scores:"
+        "Scores (winter):"
       ],
       "answer_excludes": [
         "Detroit trails",
@@ -1425,7 +1429,7 @@
         "Dallas",
         "Houston",
         "Atlanta",
-        "Scores: Dallas 81.2, Houston 61.9, Atlanta 39.9",
+        "Scores (heat): Dallas 81.2, Houston 61.9, Atlanta 39.9",
         "(higher = more exposed)"
       ],
       "answer_excludes": [
@@ -1698,6 +1702,99 @@
       ],
       "answer_excludes": [
         "What should I look up?"
+      ]
+    }
+  },
+  {
+    "id": "safer_after_compare_why_stays_on_the_pair",
+    "turns": [
+      "Compare Dallas and Atlanta",
+      "why?",
+      "which is safer?"
+    ],
+    "expect": {
+      "intent": "compare_hubs",
+      "hub_ids": [
+        "dallas",
+        "atlanta"
+      ],
+      "needs_clarification": false,
+      "answer_contains": [
+        "Atlanta is less exposed",
+        "Dallas",
+        "47.1",
+        "42.4"
+      ],
+      "answer_excludes": [
+        "Los Angeles is the least exposed"
+      ]
+    }
+  },
+  {
+    "id": "safest_after_compare_why_ranks_every_hub",
+    "turns": [
+      "Compare Dallas and Atlanta",
+      "why?",
+      "Which hub is the safest?"
+    ],
+    "expect": {
+      "intent": "rank_hubs",
+      "hub_ids": [],
+      "needs_clarification": false,
+      "rankings_count": 10,
+      "answer_contains": [
+        "Los Angeles is the least exposed"
+      ],
+      "answer_excludes": [
+        "Atlanta is less exposed"
+      ]
+    }
+  },
+  {
+    "id": "west_and_mountain_after_winter_is_overall",
+    "turns": [
+      "Which hubs in the Midwest are most exposed to winter disruption?",
+      "Which West and Mountain hubs have the highest risk?"
+    ],
+    "expect": {
+      "intent": "rank_hubs",
+      "hazards": [],
+      "hub_ids": [
+        "denver",
+        "losangeles"
+      ],
+      "needs_clarification": false,
+      "answer_contains": [
+        "weather disruption",
+        "Denver",
+        "36.1",
+        "Los Angeles",
+        "26.8",
+        "Scores: Denver 36.1"
+      ],
+      "answer_excludes": [
+        "Scores (winter)",
+        "most exposed to winter"
+      ]
+    }
+  },
+  {
+    "id": "alerts_are_part_of_the_current_score",
+    "turns": [
+      "What alerts are active in Miami?"
+    ],
+    "expect": {
+      "intent": "alerts",
+      "hub_ids": [
+        "miami"
+      ],
+      "answer_contains": [
+        "current snapshot",
+        "do affect the current score"
+      ],
+      "answer_excludes": [
+        "not reflected in the annual score",
+        "not part of the annual score"
       ]
     }
   }

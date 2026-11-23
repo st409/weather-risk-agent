@@ -376,7 +376,7 @@ def test_rank_explains_second_and_third(client):
     assert "and the most in this set" not in text
     assert "Chicago" in text
     assert "Detroit" in text
-    assert "Scores:" in text
+    assert "Scores (winter):" in text
     assert not any(char.isdigit() for char in text.split(".", 1)[0])
     assert "FEMA rates it" not in text
 
@@ -535,7 +535,7 @@ def test_january_after_follow_ups_keeps_the_ranked_set(client):
     assert not re.search(r"\b(february|march|april|june|july|august|september|october|november|december)\b", text, re.I)
     assert "Minneapolis, Detroit, and Chicago" in text
     assert "Open-Meteo 2025 weather" in text
-    assert text.lower().count("scores:") == 1
+    assert text.lower().count("scores (winter):") == 1
     assert text.lower().count("sources:") == 1
     overall = _chat(client, "Rank all 10 hubs by overall weather disruption risk.")
     january = _chat(client, "What about in January 2025 only?", overall["session_id"])
