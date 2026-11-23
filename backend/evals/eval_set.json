@@ -156,6 +156,7 @@
       "answer_contains": ["removing", "flood"],
       "answer_excludes": ["Scope:", "other factors"],
       "driver_line_excludes": ["flood"],
+      "lower_hubs_use_own_drivers": true,
       "breakdown_contains": ["renormalized"],
       "scores_are_renormalized": true,
       "excluded_hazards": ["flood"],
@@ -180,7 +181,8 @@
     "expect": {
       "intent": "rank_hubs",
       "rankings_count": 10,
-      "answer_contains": ["highest overall disruption"],
+      "answer_contains": ["highest overall disruption", "mainly on"],
+      "lower_hubs_use_own_drivers": true,
       "answer_excludes": ["highest overall overall", "Scope:"]
     }
   },
@@ -441,7 +443,9 @@
     "expect": {
       "intent": "explain_hub",
       "hub_count": 2,
-      "answer_contains": ["is lower at", "than", "versus", "Minneapolis", "Detroit", "freeze-day rate"]
+      "answer_contains": ["is lower at", "than", "Minneapolis", "Detroit"],
+      "answer_regex": "mainly .+ \\(\\d+\\.\\d+\\) and .+ \\(\\d+\\.\\d+\\) of \\d+\\.\\d+",
+      "mainly_clause_is_contributions": true
     }
   },
   {
@@ -469,6 +473,34 @@
       "intent": "explain_hub",
       "hub_ids": ["detroit"],
       "answer_contains": ["Detroit", "trailing 365"]
+    }
+  },
+  {
+    "id": "breakdown_after_month_has_no_window_notice",
+    "turns": [
+      "Why is the Dallas hub's weather disruption risk high?",
+      "What about January?",
+      "Show the full breakdown"
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["dallas"],
+      "answer_contains": ["Contributors, largest first"],
+      "answer_excludes": ["Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025"]
+    }
+  },
+  {
+    "id": "trailing_365_after_month_has_no_window_notice",
+    "turns": [
+      "Why is the Dallas hub's weather disruption risk high?",
+      "What about January?",
+      "trailing 365 days"
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["dallas"],
+      "answer_contains": ["trailing 365"],
+      "answer_excludes": ["Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025"]
     }
   }
 ]

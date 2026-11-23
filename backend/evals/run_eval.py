@@ -140,8 +140,10 @@ def _check(expect: dict, body: dict) -> list[str]:
             break
         if needle.lower() in driver_line.group(1).lower():
             errors.append(f"driver line names {needle}")
-    if expect.get("parenthetical_are_contributions"):
-        errors.extend(_parenthetical_contribution_errors(text, evidence.get("breakdown") or "", evidence.get("rankings") or []))
+    if expect.get("parenthetical_are_contributions") or expect.get("mainly_clause_is_contributions"):
+        errors.extend(_mainly_clause_errors(text, evidence.get("breakdown") or ""))
+    if expect.get("lower_hubs_use_own_drivers"):
+        errors.extend(_own_driver_errors(text, evidence.get("breakdown") or ""))
     if expect.get("answer_excludes_regex") and re.search(expect["answer_excludes_regex"], text):
         errors.append("answer matched a forbidden pattern")
     rankings = (body.get("evidence") or {}).get("rankings") or []
@@ -188,6 +190,58 @@ def _renormalized_score_errors(answer: dict, excluded: list[str]) -> list[str]:
             errors.append(f"{hub} still scores an excluded hazard")
         if abs(sum(item["score"] for item in parts) - overall) > 0.05:
             errors.append(f"{hub} renormalized parts {sum(item['score'] for item in parts)} != {overall}")
+    return errors
+
+
+def _mainly_clause_errors(text: str, breakdown: str) -> list[str]:
+    clauses = list(
+        re.finditer(
+            r"mainly\s+.+?\(([-+]?\d+(?:\.\d+)?)\)\s+and\s+.+?\(([-+]?\d+(?:\.\d+)?)\)\s+of\s+(\d+(?:\.\d+)?)",
+            text,
+            re.I,
+        )
+    )
+    if not clauses:
+        return ["missing mainly contribution clause"]
+    arrows = [float(number) for number in re.findall(r"→\s*(-?\d+(?:\.\d+)?)", breakdown)]
+    errors = []
+    for match in clauses:
+        left, right, total = (float(match.group(index)) for index in (1, 2, 3))
+        if left - total > 0.05 or right - total > 0.05 or left + right - total > 0.05:
+            errors.append(f"contributor points {left} and {right} exceed {total}")
+        for value in (left, right):
+            if arrows and not any(abs(value - arrow) <= 0.05 + 1e-9 for arrow in arrows):
+                errors.append(f"{value} is not a breakdown contribution")
+    return errors
+
+
+def _own_driver_errors(text: str, breakdown: str) -> list[str]:
+    matches = list(re.finditer(r"([A-Z][^.]{0,80}?) is lower at \d+(?:\.\d+)?, mainly on ([^.]+)\.", text))
+    if len(matches) < 2:
+        return ["missing own-driver lines for later hubs"]
+    errors = []
+    for match in matches:
+        subject = match.group(1)
+        named = [part.strip().lower() for part in re.split(r"\band\b|,", match.group(2)) if part.strip()]
+        chunk = None
+        for hub_match in re.finditer(
+            r"(?:^|\. )([A-Za-z][^:]{0,40}): .*?Contributors, largest first: (.+?)\. These points sum",
+            breakdown,
+        ):
+            hub_name = hub_match.group(1).strip()
+            if hub_name.lower() in subject.lower():
+                chunk = hub_match.group(2)
+                break
+        if chunk is None:
+            errors.append(f"no contributor list for {subject}")
+            continue
+        labels = []
+        for piece in re.split(r",\s*(?:and\s+)?|\s+and\s+", chunk):
+            label = re.split(r"\s+\d", piece.strip())[0].strip().lower()
+            if label:
+                labels.append(label)
+        if labels[: len(named)] != named:
+            errors.append(f"{subject} says {named} but top contributors are {labels[:len(named)]}")
     return errors
 
 

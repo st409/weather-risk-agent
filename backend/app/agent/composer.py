@@ -9,7 +9,7 @@ import re
 logger = logging.getLogger(__name__)
 
 from app.agent.schemas import AnswerDraft, AnswerResult, ScoreItem, SourceItem
-from app.agent.session_context import ResolvedIntent
+from app.agent.session_context import ResolvedIntent, _unsupported_window
 from app.risk.hubs import HUBS
 from app.risk.scoring import metric_payload
 from app.risk.types import HubReport, SourceRef
@@ -142,11 +142,11 @@ def evidence_block(resolved: ResolvedIntent, reports: list[HubReport]) -> dict:
         "scope": _scope_sentence(resolved, ordered) if ordered else "",
         "breakdown": breakdown,
         "details": details,
-        "unsupported_window": resolved.unsupported_window,
+        "unsupported_window": _asks_unsupported_window(resolved),
         "required_notice": _window_notice(resolved),
         "lock_breakdown": resolved.detail in {"breakdown", "evidence"} and resolved.intent != "metric_lookup",
-        "required_driver_phrase": _required_driver_phrase(resolved, ordered[0]) if ordered else "",
-        "driver_score_traps": _driver_score_traps(ordered[0], resolved) if ordered and resolved.intent != "metric_lookup" else [],
+        "required_driver_phrase": _required_driver_phrase(resolved, subject) if (subject := _subject_report(resolved, ordered)) else "",
+        "driver_score_traps": _driver_score_traps(subject, resolved) if subject and resolved.intent != "metric_lookup" else [],
     }
 
 
@@ -607,8 +607,13 @@ _UNSUPPORTED_WINDOW_WORD = re.compile(
 )
 
 
+def _asks_unsupported_window(resolved: ResolvedIntent) -> bool:
+    """The notice follows only the message just sent, never a later follow-up."""
+    return _unsupported_window((resolved.question or "").lower())
+
+
 def _window_notice(resolved: ResolvedIntent) -> str:
-    if not resolved.unsupported_window:
+    if not _asks_unsupported_window(resolved):
         return ""
     return WINDOW_NOTICE
 
@@ -637,7 +642,12 @@ def _full_breakdown(resolved: ResolvedIntent, reports: list[HubReport]) -> str:
                 if sentence:
                     chunks.append(f"{report.name} {HAZARD_LABEL[hazard]}: {sentence}")
         return " ".join(chunks)
-    chosen = reports[:3] if resolved.intent == "rank_hubs" else reports[:1]
+    if resolved.explain_gap:
+        chosen = reports
+    elif resolved.intent == "rank_hubs":
+        chosen = reports[:3]
+    else:
+        chosen = reports[:1]
     for report in chosen:
         if resolved.excluded_hazards:
             total, parts = _renormalized(report, resolved.excluded_hazards)
@@ -1069,7 +1079,7 @@ def _separator_sentence(left: HubReport, right: HubReport, hazard: str) -> str:
 def _hub_line(leader: HubReport, other: HubReport, hazards: list[str], seen: set[str], resolved: ResolvedIntent) -> str:
     score = _n(_rank_score(resolved, other))
     name = _mention(other, seen)
-    driver = _reason_driver(leader, other, hazards, resolved)
+    driver = _driver_words(other, hazards or ["overall"], resolved.excluded_hazards, limit=2)
     if resolved.safety_framing:
         lead = _mention(leader, seen)
         if driver:
@@ -1179,12 +1189,22 @@ def _contribution_rows(
     )
 
 
+def _subject_report(resolved: ResolvedIntent, ordered: list[HubReport]) -> HubReport | None:
+    if not ordered:
+        return None
+    if resolved.explain_gap and len(resolved.hub_ids) > 1:
+        for report in ordered:
+            if report.hub_id == resolved.hub_ids[1]:
+                return report
+    return ordered[0]
+
+
 def _required_driver_phrase(resolved: ResolvedIntent, report: HubReport) -> str:
-    if resolved.intent != "explain_hub" or resolved.explain_gap:
+    if resolved.intent != "explain_hub":
         return ""
-    if not re.search(r"\bwhy\b", resolved.question or "", re.I):
+    if not resolved.explain_gap and not re.search(r"\bwhy\b", resolved.question or "", re.I):
         return ""
-    total = report.focus_score(resolved.hazards)
+    total = _rank_score(resolved, report) if resolved.explain_gap else report.focus_score(resolved.hazards)
     return _driver_point_phrase(report, resolved.hazards or ["overall"], total, resolved.excluded_hazards)
 
 
@@ -1217,14 +1237,11 @@ def _gap_sentence(leader: HubReport, other: HubReport, hazards: list[str], seen:
     lead = _mention(leader, seen)
     score = _n(_rank_score(resolved, other))
     lead_score = _n(_rank_score(resolved, leader))
-    gap = _main_gap(leader, other, hazards, resolved)
-    if gap is None:
-        return f"{name} is lower at {score} than {lead} at {lead_score}."
-    label, left_points, right_points = gap
-    return (
-        f"{name} is lower at {score} than {lead} at {lead_score} "
-        f"because its {label} contributes {right_points:.1f} versus {left_points:.1f}."
-    )
+    phrase = _driver_point_phrase(other, hazards or ["overall"], _rank_score(resolved, other), resolved.excluded_hazards)
+    base = f"{name} is lower at {score} than {lead} at {lead_score}"
+    if phrase:
+        return f"{base}, {phrase}."
+    return f"{base}."
 
 
 def _main_gap(leader: HubReport, other: HubReport, hazards: list[str], resolved: ResolvedIntent) -> tuple[str, float, float] | None:
@@ -1443,11 +1460,16 @@ def _draft_rejection(text: str, evidence: dict | None, scores: list[ScoreItem]) 
     notice = str((evidence or {}).get("required_notice") or "")
     if notice and notice not in text:
         return "missing required window notice"
+    if not notice and WINDOW_NOTICE in text:
+        return "window notice was not asked for"
     if (evidence or {}).get("unsupported_window") and _UNSUPPORTED_WINDOW_WORD.search(text):
         return "attributes yearly values to an unsupported window"
     phrase = str((evidence or {}).get("required_driver_phrase") or "")
     if phrase and phrase not in text:
         return "why answer omitted the top contributors"
+    clause_problem = _mainly_clause_problem(text, evidence)
+    if clause_problem:
+        return clause_problem
     for trap in (evidence or {}).get("driver_score_traps") or []:
         name = re.escape(str(trap.get("name") or ""))
         if not name:
@@ -1474,6 +1496,42 @@ def _draft_rejection(text: str, evidence: dict | None, scores: list[ScoreItem]) 
         if any(abs(value - known) <= 0.1 + 1e-9 for known in allowed):
             continue
         return f"number {raw} is not in the evidence"
+    return None
+
+
+_MAINLY_CLAUSE = re.compile(
+    r"mainly\s+.+?\(([-+]?\d+(?:\.\d+)?)\)\s+and\s+.+?\(([-+]?\d+(?:\.\d+)?)\)\s+of\s+(\d+(?:\.\d+)?)",
+    re.I,
+)
+
+
+def _mainly_clause_problem(text: str, evidence: dict | None) -> str | None:
+    """Parentheses in 'mainly X (a) and Y (b) of TOTAL' are contribution points, and a + b stays within the total."""
+    clauses = list(_MAINLY_CLAUSE.finditer(text))
+    if not clauses:
+        return None
+    breakdown = str((evidence or {}).get("breakdown") or "")
+    arrows = [float(number) for number in re.findall(r"→\s*(-?\d+(?:\.\d+)?)", breakdown)]
+    hazard_scores: list[float] = []
+    for row in (evidence or {}).get("rankings") or []:
+        hazard_scores.extend(float(value) for value in (row.get("hazard_scores") or {}).values())
+        for driver in row.get("drivers") or []:
+            metric = str(driver.get("metric_name") or "")
+            if metric.endswith("_score") and driver.get("value") is not None:
+                hazard_scores.append(float(driver["value"]))
+    for match in clauses:
+        left = float(match.group(1))
+        right = float(match.group(2))
+        total = float(match.group(3))
+        if left - total > 0.05 or right - total > 0.05 or left + right - total > 0.05:
+            return "contributor points exceed the total"
+        for value in (left, right):
+            matches_points = any(abs(value - arrow) <= 0.05 + 1e-9 for arrow in arrows)
+            matches_score = any(abs(value - score) <= 0.1 + 1e-9 for score in hazard_scores)
+            if matches_score and not matches_points:
+                return "mainly clause cites a hazard score"
+            if arrows and not matches_points:
+                return "mainly clause is not a contribution from the breakdown"
     return None
 
 

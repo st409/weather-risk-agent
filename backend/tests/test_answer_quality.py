@@ -70,6 +70,17 @@ def test_draft_accepts_short_answers_and_checks_numbers():
     assert _draft_is_usable(why_skeleton, why_evidence, [], "")
     kept = apply_model_prose(AnswerResult(answer=why_skeleton), AnswerDraft(answer="Dallas is high because winter is 37.8."), None, why_evidence)
     assert kept.answer == why_skeleton
+    scored = {
+        "required_driver_phrase": phrase,
+        "breakdown": "Contributors, largest first: flood 49.6 → 12.4 of the 42.9 points and hurricane 51.5 → 10.3 of the 42.9 points.",
+        "rankings": [{"focus_score": 42.9, "hazard_scores": {"flood": 49.6, "hurricane": 51.5}, "drivers": [{"contribution": 12.4}, {"contribution": 10.3}]}],
+    }
+    assert not _draft_is_usable("Dallas is high, mainly flood (49.6) and hurricane (51.5) of 42.9.", scored, [], "")
+    assert not _draft_is_usable("Dallas is high, mainly winter (37.8) and flood (8.0) of 80.0.", {"breakdown": "Contributors, largest first: winter 37.8 → 11.3 of the 80.0 points and flood 32.0 → 8.0 of the 80.0 points.", "rankings": [{"hazard_scores": {"winter": 37.8, "flood": 32.0}}]}, [], "")
+    assert _draft_is_usable(why_skeleton, scored, [], "")
+    replaced = apply_model_prose(AnswerResult(answer=why_skeleton), AnswerDraft(answer="Dallas is high, mainly flood (49.6) and hurricane (51.5) of 42.9."), None, scored)
+    assert replaced.answer == why_skeleton
+    assert not _draft_is_usable(f"{WINDOW_NOTICE} Denver is highest at 44.8.", {"rankings": [{"focus_score": 44.8}]}, [], "")
 
 
 def test_snow_answer_leads_with_count_threshold_and_source(client):

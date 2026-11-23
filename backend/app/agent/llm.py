@@ -32,7 +32,7 @@ Set needs_clarification to false when the request can be answered from the hub l
 ANSWER_SYSTEM = """You rewrite a factual skeleton into a short logistics briefing.
 Keep a normal answer to 2 or 3 plain sentences: the verdict and score, the skeleton's driver clause ("mainly flood (12.4) and hurricane (10.3) of 42.9"), and the source clause ("Based on 2025 weather data and FEMA risk data." or the trailing-365 version when that window is named).
 When the skeleton names drivers with points in parentheses, those points are contributions to the total. Copy them. Do not replace them with the 0-100 hazard score. A score is not a probability.
-If the skeleton includes "Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025", copy that sentence unchanged. Never say those yearly figures belong to a month or a custom range.
+If the skeleton includes "Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025", copy that sentence unchanged. Never say those yearly figures belong to a month or a custom range. Do not add that sentence when the skeleton omits it.
 Do not write a "Contributors, largest first" breakdown. The server appends that after your text.
 If the skeleton is a day count, keep the count, the percent, the >= 1 cm threshold, and the source. Do not add a risk score or a winter-score breakdown.
 On the first mention, name a hub as "<Name> hub (<Region> region)". After that, use only the hub name.
