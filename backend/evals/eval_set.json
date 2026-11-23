@@ -10,6 +10,8 @@
       "scores_last": true,
       "names_top_hubs": true,
       "no_internal_labels": true,
+      "no_fallback": true,
+      "one_sources_line": true,
       "contributors_sum": true,
       "has_breakdown": true,
       "followups_contains": ["Want the full score breakdown?"],
@@ -37,6 +39,8 @@
       "intent": "metric_lookup",
       "answer_regex": "\\d+(\\.\\d+)?%",
       "answer_excludes": ["Contributors", "winter score", "Scores:"],
+      "no_fallback": true,
+      "one_sources_line": true,
       "metric_non_null": true,
       "has_sources": true,
       "has_assumptions": true
@@ -49,6 +53,8 @@
       "intent": "explain_hub",
       "answer_contains": ["Dallas", "Scores:", "Sources:", "FEMA NRI"],
       "no_internal_labels": true,
+      "no_fallback": true,
+      "one_sources_line": true,
       "opening_has_no_digits": true,
       "scores_last": true,
       "answer_excludes": ["not a probability", "Weather-day rates", "other factors"],
@@ -200,8 +206,8 @@
     "expect": {
       "intent": "alerts",
       "rankings_count": 10,
-      "answer_contains": ["none", "NWS"],
-      "answer_excludes": ["Scores:", "higher = more exposed"]
+      "answer_contains": ["No active", "NWS", "Sources:"],
+      "answer_excludes": ["Scores:", "higher = more exposed", "Los Angeles: none", "The rest, none"]
     }
   },
   {
@@ -267,6 +273,9 @@
     "expect": {
       "intent": "compare_hubs",
       "answer_contains": ["Miami hub (South region)", "Houston hub (South region)", "does not separate", "Scores:", "Sources:", "FEMA NRI"],
+      "answer_regex": "Scores: hurricane (?:Houston|Miami) \\d+\\.\\d+, (?:Houston|Miami) \\d+\\.\\d+; flood (?:Houston|Miami) \\d+\\.\\d+, (?:Houston|Miami) \\d+\\.\\d+",
+      "no_fallback": true,
+      "one_sources_line": true,
       "no_internal_labels": true,
       "opening_has_no_digits": true,
       "scores_last": true,
@@ -389,7 +398,8 @@
     "expect": {
       "intent": "metric_lookup",
       "hub_ids": ["denver"],
-      "answer_contains": ["trailing 365", "Sources:", "FEMA NRI"],
+      "answer_contains": ["trailing 365", "Sources:"],
+      "one_sources_line": true,
       "answer_excludes": ["Contributors", "winter score"]
     }
   },
@@ -709,8 +719,8 @@
       "intent": "explain_hub",
       "hub_ids": ["detroit", "chicago"],
       "hazards": ["winter"],
-      "answer_contains": ["trails", "freezing days", "contributes", "vs", "Chicago", "Detroit", "51.2", "44.5", "121", "90", "Scores:"],
-      "answer_excludes": ["more significantly", "is lower at", "(higher = more exposed)", "39.6", "39.1"],
+      "answer_contains": ["Chicago trails Detroit", "freezing days", "contributes", "vs", "51.2", "44.5", "121", "90", "Scores:"],
+      "answer_excludes": ["Detroit trails", "more significantly", "is lower at", "(higher = more exposed)", "39.6", "39.1"],
       "opening_has_no_digits": true,
       "scores_are_final": true,
       "gap_matches_breakdown": true
@@ -735,6 +745,17 @@
       "intent": "metric_lookup",
       "answer_contains": ["Minneapolis", "freeze days", "Detroit", "of 365"],
       "answer_excludes": ["winter score", "Denver", "72.3"]
+    }
+  },
+  {
+    "id": "trailing_365_after_ranking_reranks_all_hubs",
+    "turns": ["Which hubs are most exposed?", "What about trailing 365 days?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 10,
+      "answer_contains": ["trailing 365", "Sources:"],
+      "answer_excludes": ["Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025"],
+      "one_sources_line": true
     }
   },
   {
@@ -771,7 +792,8 @@
       "intent": "metric_lookup",
       "hub_ids": ["atlanta"],
       "answer_contains": ["Atlanta hub (South region)", "29", "8.0%", "of the year"],
-      "answer_excludes": ["most exposed", "Scores:", "higher = more exposed"]
+      "answer_excludes": ["most exposed", "Scores:", "higher = more exposed"],
+      "one_sources_line": true
     }
   },
   {
@@ -781,7 +803,8 @@
       "intent": "metric_lookup",
       "hub_ids": ["detroit"],
       "answer_contains": ["50", "snow days", "13.7%", "of the year"],
-      "answer_excludes": ["significant portion", "significant share", "Scores:", "higher = more exposed", "most exposed"]
+      "answer_excludes": ["significant portion", "significant share", "Scores:", "higher = more exposed", "most exposed"],
+      "one_sources_line": true
     }
   }
 ]

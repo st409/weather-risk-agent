@@ -114,6 +114,11 @@ def _check(expect: dict, body: dict) -> list[str]:
         opening = _opening_sentence(text)
         if re.search(r"\d", opening):
             errors.append(f"opening sentence has a digit: {opening}")
+    if expect.get("one_sources_line"):
+        if len(re.findall(r"(?i)\bSources\s*:", text)) != 1 or re.search(r"(?i)\bSource\s*:", text):
+            errors.append("expected exactly one Sources line")
+    if expect.get("no_fallback") and "did not return a valid briefing" in text.lower():
+        errors.append("answer fell back to the skeleton")
     if expect.get("scores_are_final"):
         pieces = re.split(r"Scores:", text, maxsplit=1)
         if len(pieces) != 2 or text.lower().count("scores:") != 1:

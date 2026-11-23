@@ -456,7 +456,10 @@ def _maybe_inherit(parsed: ParsedMessage, context: SessionContext) -> ParsedMess
         if not parsed.region_explicit:
             region = context.region
         if not hubs and region is None:
-            hubs = list(context.hub_ids or context.last_result_hub_ids)
+            saved = list(context.hub_ids or [])
+            ranked = list(context.last_result_hub_ids or [])
+            # A ranking follow-up keeps the whole ranked set, not one discussed hub.
+            hubs = ranked if len(saved) <= 1 and len(ranked) > 1 else (saved or ranked)
         elif region is not None and not parsed.hub_ids:
             hubs = []
         intent = "rank_hubs"

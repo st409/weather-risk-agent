@@ -2,6 +2,10 @@
 
 Answers weather-disruption questions for 10 fixed US logistics hubs. Python computes every score. A language model can only parse intent and draft wording, and only when `OPENAI_API_KEY` is set.
 
+The service is live at https://weather-risk-agent-dsev.onrender.com/ on Render's free plan. The first request after 15 idle minutes waits about a minute while the instance wakes.
+
+About 4,900 lines of application code, plus about 2,100 lines of tests and evals, and about 1,000 lines of frontend. Counts skip blank lines.
+
 ## Run
 
 ```bash
@@ -81,7 +85,7 @@ make score-once
 
 ## Deploy
 
-The page goes on Vercel. The API goes on Render. No custom domain is required. The free Render service sleeps after 15 minutes without a request, and the next request takes about a minute to wake it.
+The API is live at https://weather-risk-agent-dsev.onrender.com/ on Render. The page can be hosted on Vercel and pointed at that API. No custom domain is required. The free Render service sleeps after 15 minutes without a request, and the next request takes about a minute to wake it.
 
 ### Render
 
@@ -98,7 +102,7 @@ The page goes on Vercel. The API goes on Render. No custom domain is required. T
 ### Vercel
 
 1. Import the GitHub repo. Set the root directory to `frontend`. Framework preset: Vite.
-2. Set `VITE_API_URL` to the Render URL, for example `https://weather-risk-api.onrender.com`. No trailing slash.
+2. Set `VITE_API_URL` to `https://weather-risk-agent-dsev.onrender.com`. No trailing slash.
 3. Deploy. The site is served at a `*.vercel.app` address.
 
 Locally, leave `VITE_API_URL` unset. The dev server still proxies `/api` to `http://127.0.0.1:8000`.

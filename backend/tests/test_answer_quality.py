@@ -92,8 +92,8 @@ def test_draft_keeps_scores_in_one_final_line_and_rejects_overclaims():
     )
     assert _draft_is_usable(skeleton, {}, [], skeleton)
     woven = skeleton.replace("Dallas had 153", "Dallas at 81.2 had 153")
-    assert not _draft_is_usable(woven, {}, [], skeleton)
-    assert not _draft_is_usable(skeleton.replace(" (higher = more exposed)", ""), {}, [], skeleton)
+    assert _draft_is_usable(woven, {}, [], skeleton)
+    assert _draft_is_usable(skeleton.replace(" (higher = more exposed)", ""), {}, [], skeleton)
     assert not _draft_is_usable(
         "Dallas had 153 days reaching 95 F in 2025. Scores: (higher = more exposed).",
         {},
@@ -104,6 +104,37 @@ def test_draft_keeps_scores_in_one_final_line_and_rejects_overclaims():
     assert not _draft_is_usable(counted + " Scores: (higher = more exposed).", {"rankings": [{"focus_score": 52.5}]}, [], counted)
     assert not _draft_is_usable("Denver had a significant portion of the year.", {}, [], counted)
     assert not _draft_is_usable("Denver is the most exposed hub.", {}, [], counted)
+
+
+def test_assignment_paraphrases_do_not_fall_back(client):
+    questions = [
+        "Which hubs in the Midwest are most exposed to winter disruption?",
+        "Compare Miami and Houston in terms of hurricane and flood exposure.",
+        "What percentage of days in Denver last year had snowfall?",
+        "Why is the Dallas hub's weather disruption risk high?",
+    ]
+    for question in questions:
+        body = _chat(client, question)
+        base = AnswerResult.model_validate(body["answer"])
+        paraphrase = base.answer.replace("%", " percent").replace("32 F", "32°F").replace("Sources:", "Sources: recorded from")
+        kept = apply_model_prose(base, AnswerDraft(answer=paraphrase), None, body["evidence"])
+        assert not any("did not return a valid briefing" in item.lower() for item in kept.uncertainties)
+        assert "Sources:" in kept.answer
+        dropped = base.answer.split("Sources:", 1)[0].strip()
+        restored = apply_model_prose(base, AnswerDraft(answer=dropped), None, body["evidence"])
+        assert restored.answer.rstrip().endswith(base.answer[base.answer.index("Sources:") :].strip())
+        assert not any("did not return a valid briefing" in item.lower() for item in restored.uncertainties)
+
+
+def test_gap_draft_that_reverses_the_leader_is_rejected(client):
+    first = _chat(client, "Compare Chicago and Detroit on winter")
+    body = _chat(client, "why?", first["session_id"])
+    base = AnswerResult.model_validate(body["answer"])
+    assert "Chicago trails Detroit" in base.answer
+    flipped = base.answer.replace("Chicago trails Detroit", "Detroit trails Chicago")
+    rejected = apply_model_prose(base, AnswerDraft(answer=flipped), None, body["evidence"])
+    assert rejected.answer == base.answer
+    assert any("did not return a valid briefing" in item.lower() for item in rejected.uncertainties)
 
 
 def test_day_count_draft_accepts_a_degree_symbol():

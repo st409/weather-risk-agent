@@ -169,10 +169,14 @@ def apply_model_prose(
     uncertainties = list(base.uncertainties)
     assumptions = list(base.assumptions)
     if drafted is not None:
-        reason = _draft_rejection(drafted.answer, evidence, base.scores, base.answer)
+        cleaned = _prepare_draft(drafted.answer, base.answer)
+        reason = _draft_rejection(cleaned, evidence, base.scores, base.answer)
         if reason:
+            logger.warning("draft rejected: %s | draft: %s", reason, cleaned[:240].replace("\n", " "))
             drafted = None
             failure_note = reason
+        else:
+            drafted = drafted.model_copy(update={"answer": cleaned})
     if drafted is None and failure_note:
         logger.warning("answer skeleton shown: %s", failure_note)
     if drafted is None:
@@ -239,6 +243,21 @@ def _scores_line(resolved: ResolvedIntent, reports: list[HubReport], hazard: str
     if not bits:
         return ""
     line = "Scores: " + ", ".join(bits)
+    if resolved.show_score_legend:
+        line += " (higher = more exposed)"
+    return line + "."
+
+
+def _compare_scores_line(resolved: ResolvedIntent, reports: list[HubReport], hazards: list[str]) -> str:
+    """Label each hazard when a comparison covers more than one."""
+    shown = [hazard for hazard in hazards if hazard != "overall"] or ["overall"]
+    groups = []
+    for hazard in shown:
+        key = [] if hazard == "overall" else [hazard]
+        ordered = sorted(reports, key=lambda report: report.focus_score(key), reverse=True)
+        bits = [f"{report.name} {_n(report.focus_score(key))}" for report in ordered]
+        groups.append(", ".join(bits) if len(shown) == 1 else f"{HAZARD_LABEL[hazard]} " + ", ".join(bits))
+    line = "Scores: " + "; ".join(groups)
     if resolved.show_score_legend:
         line += " (higher = more exposed)"
     return line + "."
@@ -569,7 +588,7 @@ def _compare_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> Answe
         )
         if part
     )
-    text = _finish_text(resolved, ordered, [opening, reason, _scores_line(resolved, ordered[:3], primary)])
+    text = _finish_text(resolved, ordered, [opening, reason, _compare_scores_line(resolved, ordered, focus)])
     return _pack(resolved, reports, text, findings[:8], _followups_for(resolved, reports))
 
 
@@ -605,12 +624,8 @@ def _one_metric_answer(resolved: ResolvedIntent, report: HubReport, payload: dic
     value = payload["value"]
     noun = {"snowfall_day_pct": "snow days", "freeze_day_pct": "freezing days"}.get(resolved.metric or "", payload["label"].lower())
     threshold = _metric_threshold(resolved.metric or "")
-    source = "offline stand-in for the Open-Meteo archive" if report.weather_fallback else "Open-Meteo archive"
     seen: set[str] = set()
-    direct = (
-        f"{_mention(report, seen)} had {payload['numerator']} {noun} ({value:.1f}% of the year). "
-        f"{threshold} Source: {source}."
-    )
+    direct = f"{_mention(report, seen)} had {payload['numerator']} {noun} ({value:.1f}% of the year). {threshold}"
     text = _finish_text(resolved, [report], [direct])
     findings = [
         f"{payload['label']}: {value:.1f}%",
@@ -626,9 +641,6 @@ def _metric_group_answer(resolved: ResolvedIntent, packed: list[tuple[HubReport,
     """Compare or rank the day count itself. Do not substitute the winter index."""
     seen: set[str] = set()
     threshold = _metric_threshold(resolved.metric or "")
-    source = "Open-Meteo archive"
-    if any(report.weather_fallback for report, _payload in packed):
-        source = "offline stand-in for the Open-Meteo archive"
     leader, lead = packed[0]
 
     def _count(report: HubReport, payload: dict) -> str:
@@ -643,7 +655,7 @@ def _metric_group_answer(resolved: ResolvedIntent, packed: list[tuple[HubReport,
             f"{_mention(leader, seen)} has the most {noun}: {lead['numerator']} of {lead['denominator']}, {lead['value']:.1f}%."
         )
         direct += _next_count_clause(packed, seen)
-    direct = f"{direct} {threshold} Source: {source}."
+    direct = f"{direct} {threshold}"
     reports = [report for report, _payload in packed]
     text = _finish_text(resolved, reports, [direct])
     findings = [f"{payload['hub_name']}: {payload['numerator']} days, {payload['value']:.1f}%" for _report, payload in packed[:5]]
@@ -975,6 +987,8 @@ def _source_line(resolved: ResolvedIntent, reports: list[HubReport]) -> str:
     trailing = resolved.time_window == "trailing_365" or "trailing 365" in label
     weather = "offline stand-in for Open-Meteo" if any(report.weather_fallback for report in reports) else "Open-Meteo"
     window = "trailing 365 days" if trailing else "2025 weather"
+    if resolved.intent == "metric_lookup":
+        return f"Sources: {weather} {window}."
     return f"Sources: {weather} {window}, FEMA NRI, NWS alerts."
 
 
@@ -1238,12 +1252,11 @@ def _alerts_answer(reports: list[HubReport]) -> AnswerResult:
     active = [report for report in reports if report.active_events]
     quiet = [report for report in reports if not report.active_events]
     if not active:
-        names = ", ".join(report.name for report in reports)
-        text = f"No hub has an active NWS alert. {names}: none."
+        text = "No active NWS alerts."
     else:
         lines = [_alert_implications(active)]
         if quiet:
-            lines.append("The rest, none: " + ", ".join(report.name for report in quiet) + ".")
+            lines.append("No active alerts for the other hubs.")
         text = " ".join(part for part in lines if part)
     text += " Uncertainty: NWS shows only alerts active now, not a history for the year. Sources: NWS active alerts."
     return AnswerResult(
@@ -1607,8 +1620,12 @@ def _gap_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> AnswerRes
     by_id = {report.hub_id: report for report in reports}
     if len(resolved.hub_ids) < 2 or resolved.hub_ids[0] not in by_id or resolved.hub_ids[1] not in by_id:
         return clarification_answer("I don't have both hubs from the previous ranking.")
-    leader = by_id[resolved.hub_ids[0]]
-    other = by_id[resolved.hub_ids[1]]
+    first = by_id[resolved.hub_ids[0]]
+    second = by_id[resolved.hub_ids[1]]
+    if _rank_score(resolved, second) > _rank_score(resolved, first):
+        leader, other = second, first
+    else:
+        leader, other = first, second
     seen: set[str] = set()
     text = _finish_text(
         resolved,
@@ -1938,7 +1955,8 @@ _OVERCLAIMS = (
 
 
 def _answer_shape_problem(text: str, skeleton: str, evidence: dict | None) -> str | None:
-    """Scores stay in one final line, the legend only when the skeleton has it, and claims stay inside the skeleton."""
+    """Reject a changed claim. Sentence order, the legend, and source wording are not claims."""
+    del evidence
     if not (skeleton or "").strip():
         return None
     spoken = text.split("Contributors, largest first", 1)[0]
@@ -1949,32 +1967,10 @@ def _answer_shape_problem(text: str, skeleton: str, evidence: dict | None) -> st
             return f"overclaim {phrase}"
     if "most exposed" in low and "most exposed" not in allowed:
         return "calls a hub most exposed"
-    skeleton_scores = _scores_clause(skeleton)
-    draft_scores = _scores_clause(spoken)
-    if skeleton_scores is None:
-        if draft_scores is not None:
-            return "scores line was not in the skeleton"
-        if "higher = more exposed" in low:
-            return "score legend was not in the skeleton"
-        banned = _ranking_score_numbers(evidence) - _numbers_in(skeleton)
-        for raw in re.findall(r"\d+(?:\.\d+)?", spoken):
-            value = float(raw)
-            if any(abs(value - known) <= 0.05 + 1e-9 for known in banned):
-                return f"score {raw} was not in the skeleton"
-        return None
-    if draft_scores is None or spoken.lower().count("scores:") != 1:
-        return "scores line must appear once"
-    if not re.search(r"\d", draft_scores):
-        return "empty scores line"
-    if ("higher = more exposed" in draft_scores.lower()) != ("higher = more exposed" in skeleton_scores.lower()):
-        return "score legend does not match the skeleton"
-    if _score_tokens(draft_scores) != _score_tokens(skeleton_scores):
-        return "scores line does not match the skeleton"
-    woven = _numbers_in(skeleton_scores) - _numbers_in(_before_scores(skeleton))
-    for raw in re.findall(r"\d+(?:\.\d+)?", _before_scores(spoken)):
-        value = float(raw)
-        if any(abs(value - known) <= 0.05 + 1e-9 for known in woven):
-            return f"score {raw} is woven into the reason"
+    if _scores_clause(skeleton) is None and _scores_clause(spoken) is not None:
+        clause = _scores_clause(spoken) or ""
+        if not re.search(r"\d", clause):
+            return "empty scores line"
     return None
 
 
@@ -2012,6 +2008,93 @@ def _ranking_score_numbers(evidence: dict | None) -> set[float]:
     return found
 
 
+def _prepare_draft(text: str, skeleton: str) -> str:
+    """Drop a scores line the skeleton does not use, and keep a single Sources line."""
+    cleaned = (text or "").strip()
+    if "Scores:" not in skeleton and re.search(r"(?i)\bScores:", cleaned):
+        cleaned = re.sub(r"(?i)\s*Scores:.*?(?=(?:\s+Sources:)|\s*$)", "", cleaned, flags=re.S).strip()
+    if not re.search(r"(?i)\bSources\s*:", cleaned):
+        match = re.search(r"Sources:.*", skeleton)
+        if match:
+            cleaned = f"{cleaned.rstrip()} {match.group(0).strip()}".strip()
+    return cleaned
+
+
+def _fact_numbers(text: str) -> list[float]:
+    found = []
+    for raw in re.findall(r"\d+(?:\.\d+)?", _normalize_degree(text or "")):
+        value = float(raw)
+        if value in {0, 1, 2, 3, 4, 5, 10, 32, 40, 95, 100, 365} or 2020 <= value <= 2027:
+            continue
+        found.append(value)
+    return found
+
+
+def _unmatched_numbers(needed: list[float], got: list[float]) -> list[float]:
+    pool = list(got)
+    missing = []
+    for value in needed:
+        for index, other in enumerate(pool):
+            if abs(value - other) <= 0.1 + 1e-9:
+                pool.pop(index)
+                break
+        else:
+            missing.append(value)
+    return missing
+
+
+def _missing_numbers(needed_text: str, got_text: str) -> bool:
+    return bool(_unmatched_numbers(_fact_numbers(needed_text), _fact_numbers(got_text)))
+
+
+def _name_forms(name: str) -> list[str]:
+    short = name.split("/")[0].strip()
+    return [name] if short == name else [name, short]
+
+
+def _mentioned_hubs(text: str) -> list[str]:
+    low = (text or "").lower()
+    found = []
+    for hub in sorted(HUBS, key=lambda item: len(item.name), reverse=True):
+        if any(re.search(rf"\b{re.escape(form.lower())}\b", low) for form in _name_forms(hub.name)):
+            found.append(hub.name)
+    return found
+
+
+def _says_trails(text: str, trailer: str, leader: str) -> bool:
+    for left in _name_forms(trailer):
+        for right in _name_forms(leader):
+            if re.search(rf"\b{re.escape(left)} trails {re.escape(right)}\b", text):
+                return True
+    return False
+
+
+def _fact_problem(text: str, skeleton: str) -> str | None:
+    """Same hubs and the same counts, percents, scores, and contribution points. Wording may change."""
+    spoken = text.split("Contributors, largest first", 1)[0]
+    base = skeleton.split("Contributors, largest first", 1)[0]
+    needed = {round(value, 1) for value in _fact_numbers(base)}
+    got = {round(value, 1) for value in _fact_numbers(spoken)}
+    missing = sorted(needed - got)
+    if missing:
+        return f"missing fact {missing[0]:g}"
+    extra = sorted(got - needed)
+    if extra:
+        return f"extra fact {extra[0]:g}"
+    base_hubs = set(_mentioned_hubs(base))
+    draft_hubs = set(_mentioned_hubs(spoken))
+    if base_hubs - draft_hubs:
+        return f"missing hub {sorted(base_hubs - draft_hubs)[0]}"
+    if draft_hubs - base_hubs:
+        return f"extra hub {sorted(draft_hubs - base_hubs)[0]}"
+    leaders = {leader for trailer, leader in ((left, right) for left in base_hubs for right in base_hubs if _says_trails(base, left, right))}
+    for trailer in draft_hubs:
+        for leader in draft_hubs:
+            if trailer in leaders and _says_trails(spoken, trailer, leader):
+                return f"leader trails: {trailer}"
+    return None
+
+
 def _draft_is_usable(text: str, evidence: dict | None, scores: list[ScoreItem], skeleton: str = "") -> bool:
     return _draft_rejection(text, evidence, scores, skeleton) is None
 
@@ -2031,8 +2114,13 @@ def _draft_rejection(text: str, evidence: dict | None, scores: list[ScoreItem], 
     if (evidence or {}).get("unsupported_window") and _UNSUPPORTED_WINDOW_WORD.search(text):
         return "attributes yearly values to an unsupported window"
     phrase = str((evidence or {}).get("required_driver_phrase") or "")
-    if phrase and phrase not in text:
+    phrase_in_skeleton = bool(phrase) and not _missing_numbers(phrase, skeleton or "")
+    if phrase and (not (skeleton or "").strip() or phrase_in_skeleton) and _missing_numbers(phrase, text):
         return "why answer omitted the top contributors"
+    if (skeleton or "").strip():
+        fact_problem = _fact_problem(text, skeleton)
+        if fact_problem:
+            return fact_problem
     clause_problem = _mainly_clause_problem(text, evidence)
     if clause_problem:
         return clause_problem
