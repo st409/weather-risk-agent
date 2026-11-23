@@ -2300,7 +2300,8 @@ def _prepare_draft(text: str, skeleton: str) -> str:
     cleaned = _unescape_breaks(_normalize_apostrophes((text or "").strip()))
     cleaned = _append_skeleton_closers(_strip_model_closers(cleaned), skeleton)
     cleaned = _drop_legend_from_reason(cleaned, skeleton)
-    return _own_investment_sentence(cleaned, skeleton)
+    cleaned = _own_investment_sentence(cleaned, skeleton)
+    return _prefer_digits(cleaned, skeleton)
 
 
 _NUMBER_ONES = {
@@ -2389,15 +2390,33 @@ def _own_investment_sentence(text: str, skeleton: str) -> str:
     return f"{body} {tail}".strip()
 
 
-def _spell_numbers(text: str) -> str:
-    """'seventeen' and 'four point seven' count as the same facts as 17 and 4.7."""
+def _normalize_dashes(text: str) -> str:
+    """Unicode hyphens in 'ninety-nine' are the same hyphen as in the ASCII word."""
+    return re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u2212]", "-", text or "")
+
+
+def _spell_numbers(text: str, allow=None) -> str:
+    """'seventeen' and 'four point seven' count as the same facts as 17 and 4.7.
+
+    allow, when set, keeps a spelled number unless its value is one the skeleton already uses.
+    """
     ones = "|".join(sorted(_NUMBER_ONES, key=len, reverse=True))
     tens = "|".join(sorted(_NUMBER_TENS, key=len, reverse=True))
 
-    def tens_ones(match: re.Match[str]) -> str:
-        return str(_NUMBER_TENS[match.group(1).lower()] + _NUMBER_ONES[match.group(2).lower()])
+    def accept(original: str, rendered: str) -> str:
+        if allow is None:
+            return rendered
+        try:
+            value = float(rendered)
+        except ValueError:
+            return original
+        return rendered if allow(value) else original
 
-    spoken = re.sub(rf"\b({tens})[-\s]({ones})\b", tens_ones, text or "", flags=re.I)
+    def tens_ones(match: re.Match[str]) -> str:
+        rendered = str(_NUMBER_TENS[match.group(1).lower()] + _NUMBER_ONES[match.group(2).lower()])
+        return accept(match.group(0), rendered)
+
+    spoken = re.sub(rf"\b({tens})[-\s]({ones})\b", tens_ones, _normalize_dashes(text), flags=re.I)
 
     def point(match: re.Match[str]) -> str:
         left = match.group(1).lower()
@@ -2409,10 +2428,12 @@ def _spell_numbers(text: str) -> str:
         else:
             whole = int(left)
         if right in _NUMBER_ONES:
-            return f"{whole}.{_NUMBER_ONES[right]}"
-        if right in _NUMBER_TENS:
-            return f"{whole}.{_NUMBER_TENS[right]:02d}"
-        return f"{whole}.{int(right)}"
+            rendered = f"{whole}.{_NUMBER_ONES[right]}"
+        elif right in _NUMBER_TENS:
+            rendered = f"{whole}.{_NUMBER_TENS[right]:02d}"
+        else:
+            rendered = f"{whole}.{int(right)}"
+        return accept(match.group(0), rendered)
 
     spoken = re.sub(
         rf"\b(\d+|{tens}|{ones})(?:-|\s+)point(?:-|\s+)(\d+|{tens}|{ones})\b",
@@ -2420,12 +2441,53 @@ def _spell_numbers(text: str) -> str:
         spoken,
         flags=re.I,
     )
+    unit = rf"(?:{tens}(?:[-\s]{ones})?|{ones}|\d+(?:\.\d+)?)"
+
+    def hundred(match: re.Match[str]) -> str:
+        head = match.group(1).lower()
+        tail = match.group(2)
+        base = 100 if head == "a" else (_NUMBER_ONES.get(head) or _NUMBER_TENS[head]) * 100
+        extra = 0.0
+        if tail:
+            token = tail.lower()
+            if token[0].isdigit():
+                extra = float(token)
+            elif "-" in token or " " in token:
+                ten, one = re.split(r"[-\s]", token, maxsplit=1)
+                extra = float(_NUMBER_TENS[ten] + _NUMBER_ONES[one])
+            elif token in _NUMBER_ONES:
+                extra = float(_NUMBER_ONES[token])
+            else:
+                extra = float(_NUMBER_TENS[token])
+        total = base + extra
+        rendered = str(int(total)) if abs(total - round(total)) < 1e-9 else f"{total:.1f}"
+        return accept(match.group(0), rendered)
+
+    spoken = re.sub(
+        rf"\b(a|{ones}|{tens})\s+hundred(?:\s+and)?(?:\s+({unit}))?\b",
+        hundred,
+        spoken,
+        flags=re.I,
+    )
 
     def word(match: re.Match[str]) -> str:
         token = match.group(0).lower()
-        return str(_NUMBER_ONES[token] if token in _NUMBER_ONES else _NUMBER_TENS[token])
+        rendered = str(_NUMBER_ONES[token] if token in _NUMBER_ONES else _NUMBER_TENS[token])
+        return accept(match.group(0), rendered)
 
     return re.sub(rf"\b(?:{tens}|{ones})\b", word, spoken, flags=re.I)
+
+
+def _prefer_digits(text: str, skeleton: str) -> str:
+    """A draft may say fourteen, but the answer shows the skeleton's 14."""
+    allowed = [float(raw) for raw in re.findall(r"\d+(?:\.\d+)?", _normalize_dashes(_normalize_degree(skeleton or "")))]
+
+    def allow(value: float) -> bool:
+        if value in {0, 1, 2, 3, 4, 10}:
+            return False
+        return any(abs(value - item) <= 0.1 + 1e-9 for item in allowed)
+
+    return _spell_numbers(text, allow=allow)
 
 
 def _visible_numbers(text: str) -> str:
@@ -2511,6 +2573,36 @@ def _fact_problem(text: str, skeleton: str) -> str | None:
     return None
 
 
+_REGION_LABEL = re.compile(r"\bhub\s*\([^)]*\bregion\)", re.I)
+_PLURAL_RANK = re.compile(r"\bare the most exposed\b|\bare the most vulnerable\b|\bare effectively tied\b", re.I)
+
+
+def _opening_sentence(text: str) -> str:
+    body = _before_scores(text).strip()
+    match = re.match(r".+?[.!?](?=\s|$)", body, re.S)
+    return match.group(0) if match else body
+
+
+def _is_plural_ranking(skeleton: str) -> bool:
+    if not _PLURAL_RANK.search(_opening_sentence(skeleton)):
+        return False
+    return len(_mentioned_hubs(_scores_clause(skeleton) or "")) >= 2
+
+
+def _plural_ranking_problem(text: str, skeleton: str) -> str | None:
+    """Sentence 1 of a plural ranking names every scored hub, in plain city names."""
+    if not _is_plural_ranking(skeleton):
+        return None
+    if _REGION_LABEL.search(text):
+        return "ranking uses hub region labels"
+    opening = _opening_sentence(text)
+    named = set(_mentioned_hubs(opening))
+    missing = [name for name in _mentioned_hubs(_scores_clause(skeleton) or "") if name not in named]
+    if missing:
+        return f"sentence 1 omits {missing[0]}"
+    return None
+
+
 def _draft_is_usable(text: str, evidence: dict | None, scores: list[ScoreItem], skeleton: str = "") -> bool:
     return _draft_rejection(text, evidence, scores, skeleton) is None
 
@@ -2524,6 +2616,9 @@ def _draft_rejection(text: str, evidence: dict | None, scores: list[ScoreItem], 
     if (evidence or {}).get("unsupported_window") and _UNSUPPORTED_WINDOW_WORD.search(text):
         return "attributes yearly values to an unsupported window"
     if (skeleton or "").strip():
+        ranking = _plural_ranking_problem(text, skeleton)
+        if ranking:
+            return ranking
         return _fact_problem(text, skeleton)
     label_problem = _internal_label_problem(text, skeleton, evidence)
     if label_problem:

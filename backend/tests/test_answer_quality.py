@@ -37,6 +37,9 @@ def _chat(client: TestClient, message: str, session_id: str | None = None) -> di
 
 def test_prompt_keeps_short_answers():
     assert "2 or 3" in ANSWER_SYSTEM
+    assert "every hub on the Scores line" in ANSWER_SYSTEM
+    assert "not fourteen" in ANSWER_SYSTEM
+    assert "not ninety-nine" in ANSWER_SYSTEM
     assert "not a probability" in ANSWER_SYSTEM
     assert ">= 1 cm" in ANSWER_SYSTEM
     assert "is riskier" in ANSWER_SYSTEM
@@ -197,6 +200,16 @@ def test_day_count_words_and_a_missing_notice_still_keep_the_draft():
     assert kept_snow.rejection_reason is None
     miami = "Houston had 14 heavy-rain days and Miami had 5. Scores: hurricane Houston 80.0, Miami 80.0; flood Houston 44.9, Miami 40.2."
     assert _draft_is_usable(miami.replace("44.9", "44.9, about forty-five"), {}, [], miami)
+    assert _fact_numbers("fourteen") == [14.0]
+    assert _fact_numbers("ninety-nine") == [99.0]
+    assert _fact_numbers("ninety\u2011nine") == [99.0]
+    assert _fact_numbers("two hundred and twelve") == [212.0]
+    spoken_days = miami.replace("14", "fourteen").replace("Miami had 5", "Miami had five")
+    assert _draft_is_usable(spoken_days, {}, [], miami)
+    kept_days = apply_model_prose(AnswerResult(answer=miami), AnswerDraft(answer=spoken_days), None, {})
+    assert kept_days.fallback is False
+    assert "fourteen" not in kept_days.answer
+    assert "14 heavy-rain days" in kept_days.answer
     assert _draft_is_usable(draft, {}, [], skeleton)
     assert _draft_is_usable(draft.replace("two point seven percent", "2.7 percent"), {}, [], skeleton)
     assert not _draft_is_usable(draft.replace("eight", "nine"), {}, [], skeleton)
@@ -358,6 +371,36 @@ def test_why_after_a_ranking_explains_the_gap(client):
     assert "snow-day rate" in text
     assert "both are rated high winter-risk by FEMA" in text
     assert "most exposed to winter disruption, with" not in text
+
+
+def test_plural_ranking_draft_names_every_hub_in_plain_words():
+    skeleton = (
+        "Minneapolis, Detroit, and Chicago are the most exposed to winter disruption, with Minneapolis on top. "
+        "Minneapolis had 212 freezing days in 2025. "
+        "Scores: Minneapolis 72.3, Detroit 51.2, Chicago 44.5 (higher = more exposed)."
+    )
+    labeled = (
+        "Minneapolis hub (Midwest region) and Detroit hub (Midwest region) are the most exposed to winter disruption. "
+        "Minneapolis had 212 freezing days in 2025. "
+        "Scores: Minneapolis 72.3, Detroit 51.2, Chicago 44.5 (higher = more exposed)."
+    )
+    assert not _draft_is_usable(labeled, {}, [], skeleton)
+    shown = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=labeled), None, {})
+    assert shown.fallback is True
+    assert shown.answer.startswith("Minneapolis, Detroit, and Chicago")
+    assert "hub (" not in shown.answer
+    overall = (
+        "New York/Newark, Houston, and Dallas are the most exposed to weather disruption, with New York/Newark slightly ahead. "
+        "FEMA rates New York/Newark a high historical hurricane-risk area. "
+        "Scores: New York/Newark 50.6, Houston 51.2, Dallas 47.1 (higher = more exposed)."
+    )
+    dropped = (
+        "New York/Newark and Houston are the most exposed to weather disruption, with New York/Newark slightly ahead. "
+        "Dallas trails the other two. FEMA rates New York/Newark a high historical hurricane-risk area. "
+        "Scores: New York/Newark 50.6, Houston 51.2, Dallas 47.1 (higher = more exposed)."
+    )
+    assert not _draft_is_usable(dropped, {}, [], overall)
+    assert _draft_is_usable(overall, {}, [], overall)
 
 
 def test_single_hub_follow_up_stays_relative_to_the_set(client):
