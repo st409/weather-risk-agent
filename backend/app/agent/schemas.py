@@ -6,7 +6,19 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-IntentName = Literal["rank_hubs", "compare_hubs", "metric_lookup", "explain_hub", "follow_up", "unknown"]
+IntentName = Literal[
+    "rank_hubs",
+    "compare_hubs",
+    "metric_lookup",
+    "explain_hub",
+    "follow_up",
+    "alerts",
+    "methodology",
+    "greeting",
+    "off_topic",
+    "unsupported_language",
+    "unknown",
+]
 SourceType = Literal["live_api", "cached_api", "static_public_dataset"]
 
 

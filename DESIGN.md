@@ -141,7 +141,7 @@ Business-importance weights are stored as 1.0 and are not applied.
 
 Two schema-checked calls when a key is present:
 
-1. Intent JSON: `rank_hubs`, `compare_hubs`, `metric_lookup`, `explain_hub`, `follow_up`, or `unknown`, plus hubs, region, hazards, metric, window, and a clarification flag.
+1. Intent JSON: `rank_hubs`, `compare_hubs`, `metric_lookup`, `explain_hub`, `follow_up`, `alerts`, `methodology`, `greeting`, `off_topic`, `unsupported_language`, or `unknown`, plus hubs, region, hazards, metric, window, and a clarification flag. Greeting, off-topic, methodology, and non-English turns are answered in code and do not call the model.
 2. Answer JSON: prose, findings, assumptions, uncertainties, sources, and follow-ups.
 
 Python overwrites `scores` and `sources` after the second call. Explicit hubs and hazards found in the text stay authoritative. One schema retry, then the deterministic answer.
@@ -151,6 +151,14 @@ Python overwrites `scores` and `sources` after the second call. Explicit hubs an
 ## Evaluation
 
 `backend/evals/eval_set.json` checks status, schema, hub names, non-null metrics, assumptions, and sources. There is no model judge. Fixture mode keeps the run offline. One case feeds invalid JSON twice and checks that schema validation fails closed.
+
+## Assumptions
+
+Answers are English only. A message in another language gets one English redirect and no ranking.
+
+Supported time windows are calendar year 2025 and a trailing 365 days. A single month or a custom range is not scored. The reply says those two windows are supported, then answers for calendar year 2025. The previous intent is kept, so a snow-day question stays a snow-day question.
+
+Overall weights are fixed: winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, heat 0.10. Asking to ignore a hazard drops that weight and renormalizes the rest. Business-importance weights stay at 1.0 and are not applied.
 
 ## Scope left out
 

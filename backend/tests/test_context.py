@@ -71,12 +71,13 @@ def test_unknown_hub_asks_instead_of_guessing():
     assert "Phoenix" in (resolved.clarifying_question or "")
 
 
-def test_safer_without_context_defines_the_word():
-    resolved = _resolve("Which is safer?")
-    assert resolved.needs_clarification is True
-    text = resolved.clarifying_question or ""
-    assert "lower" in text
-    assert "disruption" in text
+def test_safer_without_context_ranks_every_hub():
+    resolved = _resolve("Which hub is safest?")
+    assert resolved.needs_clarification is False
+    assert resolved.intent == "rank_hubs"
+    assert resolved.hub_ids == []
+    assert resolved.region is None
+    assert resolved.safety_framing is True
 
 
 def test_safer_after_compare_uses_those_hubs():
@@ -94,7 +95,7 @@ def test_safer_after_compare_uses_those_hubs():
     assert resolved.hazards == []
 
 
-def test_source_question_is_a_follow_up_with_detail():
+def test_source_question_is_methodology_without_inheriting_a_hub():
     context = SessionContext(
         hub_ids=["denver"],
         hazards=["winter"],
@@ -106,7 +107,8 @@ def test_source_question_is_a_follow_up_with_detail():
     )
     resolved = _resolve("What are your sources?", context)
     assert resolved.needs_clarification is False
-    assert resolved.hub_ids == ["denver"]
+    assert resolved.intent == "methodology"
+    assert resolved.hub_ids == []
     assert resolved.detail == "sources"
 
 
@@ -115,7 +117,130 @@ def test_flood_follow_up_without_context_asks():
     assert resolved.needs_clarification is True
 
 
-def test_hebrew_flood_follow_up_uses_previous_turn():
+def test_negation_verbs_drop_the_named_hazard():
+    cases = {
+        "Which hubs are most exposed if we exclude heat?": "heat",
+        "Which hubs are most exposed, leave out winter?": "winter",
+        "Which hubs are most exposed and drop hurricanes?": "hurricane",
+        "Which hubs are most exposed, not counting floods?": "flood",
+        "Which hubs are most exposed, heat excluded?": "heat",
+    }
+    for message, hazard in cases.items():
+        resolved = _resolve(message)
+        assert resolved.intent == "rank_hubs", message
+        assert resolved.excluded_hazards == [hazard], message
+        assert resolved.hub_ids == []
+
+
+def test_january_follow_up_keeps_the_snowfall_question():
+    context = SessionContext(
+        hub_ids=["denver"],
+        metric="snowfall_day_pct",
+        time_window="last_calendar_year",
+        last_intent="metric_lookup",
+        last_result_hub_ids=["denver"],
+    )
+    resolved = _resolve("What about January?", context)
+    assert resolved.intent == "metric_lookup"
+    assert resolved.hub_ids == ["denver"]
+    assert resolved.metric == "snowfall_day_pct"
+    assert resolved.unsupported_window is True
+    assert resolved.time_window == "last_calendar_year"
+
+
+def test_show_the_breakdown_keeps_the_ranking():
+    context = SessionContext(
+        region="Midwest",
+        hazards=["winter"],
+        last_intent="rank_hubs",
+        last_result_hub_ids=["minneapolis", "chicago", "detroit"],
+    )
+    resolved = _resolve("Show the breakdown", context)
+    assert resolved.intent == "rank_hubs"
+    assert resolved.region == "Midwest"
+    assert resolved.detail == "breakdown"
+    assert resolved.needs_clarification is False
+
+
+def test_merge_ignores_a_region_or_hub_the_user_did_not_name():
+    from app.agent.orchestrator import _merge
+    from app.agent.schemas import IntentResult
+
+    rules = parse_message("Which hubs are most exposed?")
+    model = IntentResult(
+        intent="rank_hubs",
+        hub_ids=["denver"],
+        region="Midwest",
+        hazards=["heat"],
+        needs_clarification=False,
+    )
+    merged = _merge(rules, model, SessionContext())
+    assert merged.region is None
+    assert merged.hub_ids == []
+
+    named = parse_message("Which hubs in the Midwest are most exposed?")
+    overwritten = _merge(
+        named,
+        IntentResult(intent="rank_hubs", hub_ids=["miami"], region="South", needs_clarification=False),
+        SessionContext(),
+    )
+    assert overwritten.region == "Midwest"
+    assert overwritten.hub_ids == []
+
+
+def test_dalas_counts_as_dallas():
+    resolved = _resolve("Why is Dalas risky?")
+    assert resolved.intent == "explain_hub"
+    assert resolved.hub_ids == ["dallas"]
+    assert resolved.needs_clarification is False
+
+
+def test_yes_after_the_offer_asks_for_the_breakdown():
+    context = SessionContext(
+        region=None,
+        hazards=[],
+        last_intent="rank_hubs",
+        last_result_hub_ids=["miami", "houston"],
+        offered_breakdown=True,
+    )
+    resolved = _resolve("yes", context)
+    assert resolved.intent == "rank_hubs"
+    assert resolved.detail == "breakdown"
+    assert resolved.needs_clarification is False
+
+
+def test_follow_up_uses_the_hub_just_discussed():
+    context = SessionContext(
+        hub_ids=["minneapolis", "detroit"],
+        focus_hub_id="detroit",
+        hazards=["winter"],
+        last_intent="explain_hub",
+        last_result_hub_ids=["minneapolis", "detroit", "chicago"],
+    )
+    breakdown = _resolve("Show the full breakdown", context)
+    assert breakdown.intent == "explain_hub"
+    assert breakdown.hub_ids == ["detroit"]
+    assert breakdown.detail == "breakdown"
+    window = _resolve("trailing 365 days", context)
+    assert window.intent == "explain_hub"
+    assert window.hub_ids == ["detroit"]
+    assert window.time_window == "trailing_365"
+
+
+def test_why_number_two_compares_with_the_leader():
+    context = SessionContext(
+        region="Midwest",
+        hazards=["winter"],
+        last_intent="rank_hubs",
+        last_result_hub_ids=["minneapolis", "chicago", "detroit"],
+    )
+    resolved = _resolve("Why is #2 lower?", context)
+    assert resolved.explain_gap is True
+    assert resolved.hub_ids == ["minneapolis", "chicago"]
+    assert resolved.hazards == ["winter"]
+
+
+def test_hebrew_message_does_not_rank():
     context = SessionContext(
         hub_ids=["miami", "houston"],
         hazards=["hurricane", "flood"],
@@ -125,11 +250,6 @@ def test_hebrew_flood_follow_up_uses_previous_turn():
         last_user_message="Compare Miami and Houston in terms of hurricane and flood exposure.",
     )
     resolved = _resolve("ומה לגבי שיטפונות בלבד?", context)
+    assert resolved.intent == "unsupported_language"
+    assert resolved.hub_ids == []
     assert resolved.needs_clarification is False
-    assert resolved.intent == "compare_hubs"
-    assert resolved.hub_ids == ["miami", "houston"]
-    assert resolved.hazards == ["flood"]
-    previous = context.for_intent_parser()
-    assert previous["hub_ids"] == ["miami", "houston"]
-    assert previous["hazards"] == ["hurricane", "flood"]
-    assert "Miami" in previous["previous_user_message"]

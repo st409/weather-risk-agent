@@ -87,10 +87,13 @@ def test_demo_conversation(client):
     assert phoenix["intent"]["needs_clarification"] is True
     assert "Phoenix" in phoenix["answer"]["answer"]
 
-    safer = _chat(client, "Which is safer?")
-    assert safer["intent"]["needs_clarification"] is True
-    assert "lower" in safer["answer"]["answer"]
-    assert "disruption" in safer["answer"]["answer"]
+    safer = _chat(client, "Which hub is safest?")
+    assert safer["intent"]["needs_clarification"] is False
+    assert safer["intent"]["intent"] == "rank_hubs"
+    assert len(safer["evidence"]["rankings"]) == 10
+    assert "is riskier at" in safer["answer"]["answer"].lower()
+    assert "is lower" not in safer["answer"]["answer"].lower()
+    assert "disruption" in safer["answer"]["answer"].lower()
 
 
 def test_direct_score_endpoints(client):

@@ -4,9 +4,11 @@
     "turns": ["Which hubs in the Midwest are most exposed to winter disruption?"],
     "expect": {
       "intent": "rank_hubs",
-      "answer_contains": ["Minneapolis hub (Midwest region)", "Chicago hub (Midwest region)", "Detroit hub (Midwest region)", "is lower", "Contributors, largest first"],
+      "answer_contains": ["Minneapolis hub (Midwest region)", "Chicago hub (Midwest region)", "Detroit hub (Midwest region)", "is lower", "Based on 2025 weather data and FEMA risk data."],
+      "answer_excludes": ["Miami", "Los Angeles", "not a probability", "Weather-day rates", "other factors"],
       "contributors_sum": true,
-      "answer_excludes": ["Miami", "Los Angeles"],
+      "has_breakdown": true,
+      "followups_contains": ["Want the full score breakdown?"],
       "score_hazard": "winter",
       "has_assumptions": true,
       "has_sources": true,
@@ -30,6 +32,7 @@
     "expect": {
       "intent": "metric_lookup",
       "answer_regex": "\\d+(\\.\\d+)?%",
+      "answer_excludes": ["Contributors", "winter score", "of the"],
       "metric_non_null": true,
       "has_sources": true,
       "has_assumptions": true
@@ -40,9 +43,14 @@
     "turns": ["Why is the Dallas hub's weather disruption risk high?"],
     "expect": {
       "intent": "explain_hub",
-      "answer_contains": ["Dallas hub (South region)", "Contributors, largest first", "heat", "hurricane"],
+      "answer_contains": ["Dallas hub (South region)", "Based on 2025 weather data and FEMA risk data.", "mainly flood", "hurricane"],
+      "answer_regex": "mainly flood \\(\\d+\\.\\d+\\) and hurricane \\(\\d+\\.\\d+\\) of \\d+\\.\\d+",
+      "parenthetical_are_contributions": true,
+      "answer_excludes": ["not a probability", "Weather-day rates", "other factors"],
+      "breakdown_contains": ["heat", "hurricane", "Contributors, largest first"],
       "uncertainties_exclude": ["coastal-flood"],
       "contributors_sum": true,
+      "has_breakdown": true,
       "has_assumptions": true,
       "has_sources": true,
       "has_uncertainties": true,
@@ -90,10 +98,14 @@
   },
   {
     "id": "safer_defines_or_asks",
-    "turns": ["Which is safer?"],
+    "turns": ["Which hub is safest?"],
     "expect": {
-      "needs_clarification": true,
-      "answer_contains": ["lower", "disruption"]
+      "intent": "rank_hubs",
+      "needs_clarification": false,
+      "rankings_count": 10,
+      "answer_contains": ["lowest", "disruption", "is riskier at"],
+      "answer_regex": "is riskier at \\d+\\.\\d+ and .+ is riskier at \\d+\\.\\d+",
+      "answer_excludes": ["is lower"]
     }
   },
   {
@@ -110,7 +122,7 @@
     "expect": {
       "intent": "metric_lookup",
       "answer_contains": ["Denver hub (Mountain region)", ">= 1 cm", "Open-Meteo"],
-      "answer_excludes": ["risk score", "/100", "hurricane"],
+      "answer_excludes": ["risk score", "/100", "hurricane", "Contributors", "winter score"],
       "answer_regex": "\\d+(\\.\\d+)?%",
       "has_sources": true,
       "has_uncertainties": true,
@@ -123,13 +135,340 @@
     "expect": {
       "intent": "explain_hub",
       "hub_ids": ["denver"],
-      "answer_contains": ["Denver hub (Mountain region)", "Contributors, largest first", "These points sum to", "heat"],
-      "answer_excludes": ["hurricane"],
+      "answer_contains": ["Denver hub (Mountain region)", "Based on 2025 weather data and FEMA risk data."],
+      "answer_excludes": ["hurricane", "not a probability", "Weather-day rates", "other factors", "Contributors"],
+      "breakdown_contains": ["heat", "Contributors, largest first"],
+      "breakdown_excludes": ["hurricane", "other factors"],
       "uncertainties_exclude": ["hurricane", "coastal-flood"],
       "contributors_sum": true,
+      "has_breakdown": true,
       "has_uncertainties": true,
       "has_sources": true,
       "followups_exclude": ["Why is Denver", "Why is the Denver", "Miami", "Houston", "Chicago", "Dallas"]
+    }
+  },
+  {
+    "id": "exclude_flood_renormalizes",
+    "turns": ["Which hubs are most exposed, excluding floods?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 10,
+      "answer_contains": ["removing", "flood"],
+      "answer_excludes": ["Scope:", "other factors"],
+      "driver_line_excludes": ["flood"],
+      "breakdown_contains": ["renormalized"],
+      "scores_are_renormalized": true,
+      "excluded_hazards": ["flood"],
+      "has_breakdown": true
+    }
+  },
+  {
+    "id": "ordinal_second_hub",
+    "turns": [
+      "Which hubs in the Midwest are most exposed to winter disruption?",
+      "Explain the second one."
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_count": 1,
+      "answer_excludes": ["Which hub should I explain"]
+    }
+  },
+  {
+    "id": "full_ranking",
+    "turns": ["Which hubs are most exposed?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 10,
+      "answer_contains": ["highest overall disruption"],
+      "answer_excludes": ["highest overall overall", "Scope:"]
+    }
+  },
+  {
+    "id": "active_alerts",
+    "turns": ["What alerts are active?"],
+    "expect": {
+      "intent": "alerts",
+      "rankings_count": 10,
+      "answer_contains": ["none", "NWS"]
+    }
+  },
+  {
+    "id": "methodology_fresh",
+    "turns": ["How is the score calculated?"],
+    "expect": {
+      "intent": "methodology",
+      "answer_contains": ["0.30", "calendar year 2025", "trailing 365", "Sources:"],
+      "has_assumptions": true,
+      "has_sources": true
+    }
+  },
+  {
+    "id": "january_window_stays_a_count",
+    "turns": ["How many snow days did Denver have in January 2025?"],
+    "expect": {
+      "intent": "metric_lookup",
+      "hub_ids": ["denver"],
+      "answer_contains": ["Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025", ">= 1 cm"],
+      "answer_excludes": ["risk score", "/100", "January"]
+    }
+  },
+  {
+    "id": "new_location_does_not_inherit",
+    "turns": [
+      "Compare Miami and Houston in terms of hurricane and flood exposure.",
+      "How many snow days did Denver have last year?"
+    ],
+    "expect": {
+      "intent": "metric_lookup",
+      "hub_ids": ["denver"],
+      "answer_contains": ["Denver hub (Mountain region)"],
+      "answer_excludes": ["Miami", "Houston"]
+    }
+  },
+  {
+    "id": "english_only",
+    "turns": ["ומה לגבי שיטפונות בלבד?"],
+    "expect": {
+      "intent": "unsupported_language",
+      "answer_contains": ["I currently support English only"]
+    }
+  },
+  {
+    "id": "greeting",
+    "turns": ["hello"],
+    "expect": {
+      "intent": "greeting",
+      "answer_contains": ["10 US logistics hubs", "Which hub is most exposed to flooding?"]
+    }
+  },
+  {
+    "id": "off_topic",
+    "turns": ["Who won the super bowl?"],
+    "expect": {
+      "intent": "off_topic",
+      "answer_contains": ["weather-disruption risk", "10 hubs"]
+    }
+  },
+  {
+    "id": "comparison_format",
+    "turns": ["Compare Miami and Houston in terms of hurricane and flood exposure."],
+    "expect": {
+      "intent": "compare_hubs",
+      "answer_contains": ["Miami hub (South region)", "Houston hub (South region)", "vs", "does not separate", "Based on 2025 weather data and FEMA risk data."],
+      "answer_excludes": ["Scope:"],
+      "answer_excludes_regex": "\\(\\d+(?:\\.\\d+)? points\\)"
+    }
+  },
+  {
+    "id": "breakdown_on_request",
+    "turns": [
+      "Which hubs in the Midwest are most exposed to winter disruption?",
+      "Show the breakdown"
+    ],
+    "expect": {
+      "intent": "rank_hubs",
+      "answer_contains": ["Contributors, largest first", "These points sum to"],
+      "answer_excludes": ["other factors"],
+      "contributors_sum": true,
+      "has_breakdown": true
+    }
+  },
+  {
+    "id": "why_exactly_shows_math",
+    "turns": [
+      "Why is the Dallas hub's weather disruption risk high?",
+      "Why exactly?"
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["dallas"],
+      "answer_contains": ["Contributors, largest first", "heat", "hurricane"],
+      "answer_excludes": ["other factors"],
+      "contributors_sum": true
+    }
+  },
+  {
+    "id": "exclude_heat",
+    "turns": ["Which hubs are most exposed if we exclude heat?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 10,
+      "answer_contains": ["removing", "heat"],
+      "scores_are_renormalized": true,
+      "excluded_hazards": ["heat"]
+    }
+  },
+  {
+    "id": "leave_out_winter",
+    "turns": ["Which hubs are most exposed, leave out winter?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 10,
+      "answer_contains": ["removing", "winter"],
+      "scores_are_renormalized": true,
+      "excluded_hazards": ["winter"]
+    }
+  },
+  {
+    "id": "drop_hurricanes",
+    "turns": ["Which hubs are most exposed and drop hurricanes?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 10,
+      "answer_contains": ["removing", "hurricane"],
+      "scores_are_renormalized": true,
+      "excluded_hazards": ["hurricane"]
+    }
+  },
+  {
+    "id": "not_counting_floods",
+    "turns": ["Which hubs are most exposed, not counting floods?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 10,
+      "answer_contains": ["removing", "flood"],
+      "scores_are_renormalized": true,
+      "excluded_hazards": ["flood"]
+    }
+  },
+  {
+    "id": "excluded_word",
+    "turns": ["Which hubs are most exposed, heat excluded?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 10,
+      "answer_contains": ["removing", "heat"],
+      "excluded_hazards": ["heat"],
+      "scores_are_renormalized": true
+    }
+  },
+  {
+    "id": "january_keeps_snowfall_percent",
+    "turns": [
+      "What percentage of days in Denver last year had snowfall?",
+      "What about January?"
+    ],
+    "expect": {
+      "intent": "metric_lookup",
+      "hub_ids": ["denver"],
+      "answer_contains": ["Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025", ">= 1 cm"],
+      "answer_excludes": ["Contributors", "winter score", "risk score", "January"]
+    }
+  },
+  {
+    "id": "snowfall_percent_for_january",
+    "turns": ["Denver snowfall % for January"],
+    "expect": {
+      "intent": "metric_lookup",
+      "hub_ids": ["denver"],
+      "answer_contains": ["Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025", ">= 1 cm"],
+      "answer_excludes": ["Contributors", "winter score", "January"]
+    }
+  },
+  {
+    "id": "trailing_365_follow_up_names_window",
+    "turns": [
+      "How many snow days did Denver have last year?",
+      "What about the trailing 365 days?"
+    ],
+    "expect": {
+      "intent": "metric_lookup",
+      "hub_ids": ["denver"],
+      "answer_contains": ["trailing 365", "Based on the trailing 365 days of weather data and FEMA risk data."],
+      "answer_excludes": ["Contributors", "winter score"]
+    }
+  },
+  {
+    "id": "custom_range_uses_2025_notice",
+    "turns": ["How many snow days did Denver have from 2024-01-01 to 2024-06-01?"],
+    "expect": {
+      "intent": "metric_lookup",
+      "hub_ids": ["denver"],
+      "answer_contains": ["Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025"],
+      "answer_excludes": ["2024-01-01", "January"]
+    }
+  },
+  {
+    "id": "yes_appends_breakdown",
+    "turns": ["Which hubs are most exposed?", "yes"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 10,
+      "answer_contains": ["Contributors, largest first", "These points sum to"],
+      "answer_excludes": ["other factors"],
+      "contributors_sum": true
+    }
+  },
+  {
+    "id": "show_the_full_breakdown",
+    "turns": [
+      "Why is the Dallas hub's weather disruption risk high?",
+      "Show the full breakdown"
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["dallas"],
+      "answer_contains": ["Contributors, largest first", "These points sum to"],
+      "contributors_sum": true
+    }
+  },
+  {
+    "id": "calculated_for_dallas",
+    "turns": ["How is it calculated for Dallas?"],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["dallas"],
+      "answer_contains": ["Dallas hub (South region)", "Contributors, largest first"],
+      "contributors_sum": true
+    }
+  },
+  {
+    "id": "typo_dalas",
+    "turns": ["Why is Dalas risky?"],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["dallas"],
+      "answer_contains": ["Dallas hub (South region)", "mainly"]
+    }
+  },
+  {
+    "id": "why_number_two_lower",
+    "turns": [
+      "Which hubs in the Midwest are most exposed to winter disruption?",
+      "Why is #2 lower?"
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_count": 2,
+      "answer_contains": ["is lower at", "than", "versus", "Minneapolis", "Detroit", "freeze-day rate"]
+    }
+  },
+  {
+    "id": "breakdown_follows_the_discussed_hub",
+    "turns": [
+      "Which hubs in the Midwest are most exposed to winter disruption?",
+      "Why is #2 lower?",
+      "Show the full breakdown"
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["detroit"],
+      "answer_contains": ["Detroit", "Contributors, largest first"],
+      "contributors_sum": true
+    }
+  },
+  {
+    "id": "trailing_365_follows_the_discussed_hub",
+    "turns": [
+      "Which hubs in the Midwest are most exposed to winter disruption?",
+      "Why is #2 lower?",
+      "trailing 365 days"
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["detroit"],
+      "answer_contains": ["Detroit", "trailing 365"]
     }
   }
 ]

@@ -9,6 +9,7 @@ import uuid
 
 from app.agent.composer import (
     apply_model_prose,
+    canned_answer,
     clarification_answer,
     deterministic_answer,
     evidence_block,
@@ -25,7 +26,7 @@ from app.agent.session_context import (
 )
 from app.db import repository
 from app.risk.engine import public_report, score_selection
-from app.risk.hubs import HUB_BY_ID, HUBS, REGIONS
+from app.risk.hubs import HUBS
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,24 @@ def handle_chat(session_id: str | None, message: str) -> dict:
     context = SessionContext.from_dict(repository.get_context(session_id))
     repository.add_message(session_id, "user", text, None)
 
+    preview = parse_message(text)
+    formula = bool(re.search(r"\bhow is (?:it|the score|this) calculated\b", text.lower()))
+    keep_formula = preview.intent == "methodology" and formula and context.last_intent
+    if preview.intent in {"unsupported_language", "greeting", "off_topic", "methodology"} and not keep_formula:
+        resolved = resolve_intent(preview, context)
+        resolved.question = text
+        resolved.prior_question = context.last_user_message
+        answer = canned_answer(resolved)
+        evidence = _empty_evidence()
+        evidence["detail"] = resolved.detail
+        payload = _payload(session_id, answer, resolved, evidence)
+        repository.add_message(session_id, "assistant", answer.answer, payload)
+        return payload
+
     parsed, intent_note = _choose_parse(text, context)
+    if formula and context.last_intent and not parsed.hub_ids:
+        parsed.intent = "follow_up"
+        parsed.detail = "breakdown"
     resolved = resolve_intent(parsed, context)
     resolved.question = text
     resolved.prior_question = context.last_user_message
@@ -70,22 +88,31 @@ def handle_chat(session_id: str | None, message: str) -> dict:
         )
         answer = apply_model_prose(answer, drafted, failure, evidence)
     else:
-        answer = apply_model_prose(answer, None, None)
+        answer = apply_model_prose(answer, None, None, evidence)
     if intent_note:
         answer.uncertainties = [intent_note, *answer.uncertainties]
 
     ordered_ids = [row["hub_id"] for row in evidence["rankings"]]
+    if resolved.explain_gap and len(resolved.hub_ids) > 1:
+        focus_hub_id = resolved.hub_ids[1]
+    elif len(resolved.hub_ids) == 1:
+        focus_hub_id = resolved.hub_ids[0]
+    else:
+        focus_hub_id = None
+    keep_ranking = bool(context.last_result_hub_ids) and (resolved.explain_gap or resolved.inherited)
     repository.save_context(
         session_id,
         SessionContext(
-            hub_ids=list(resolved.hub_ids) or ordered_ids,
+            hub_ids=[focus_hub_id] if focus_hub_id else (list(resolved.hub_ids) or ordered_ids),
             region=resolved.region,
             hazards=list(resolved.hazards),
             metric=resolved.metric if resolved.intent == "metric_lookup" else None,
             time_window=window_key,
             last_intent=resolved.intent,
-            last_result_hub_ids=ordered_ids,
+            last_result_hub_ids=list(context.last_result_hub_ids) if keep_ranking else ordered_ids,
             last_user_message=text,
+            offered_breakdown=any("full score breakdown" in item.lower() for item in answer.follow_up_questions),
+            focus_hub_id=focus_hub_id,
         ).to_dict(),
     )
     for report in reports:
@@ -107,20 +134,32 @@ def _choose_parse(message: str, context: SessionContext) -> tuple[ParsedMessage,
         return rules, f"language model request failed ({exc.__class__.__name__})"
     if model_intent is None:
         return rules, note
-    return _merge(rules, model_intent), None
+    return _merge(rules, model_intent, context), None
 
 
-def _merge(rules: ParsedMessage, model_intent) -> ParsedMessage:
+def _merge(rules: ParsedMessage, model_intent, context: SessionContext) -> ParsedMessage:
     # The model already received previous_turn. On a follow-up it cannot replace
     # the hubs from that turn; resolve_intent copies them.
+    named_hubs = list(rules.hub_ids)
+    if (
+        model_intent.intent == "follow_up"
+        and rules.intent == "explain_hub"
+        and not named_hubs
+        and context.last_result_hub_ids
+    ):
+        rules.intent = "follow_up"
+        if rules.ordinal_index is None:
+            rules.ordinal_index = 0
+    if rules.intent in {"alerts", "methodology", "greeting", "off_topic", "unsupported_language"}:
+        return rules
     if rules.intent == "follow_up" or (rules.intent == "unknown" and model_intent.intent == "follow_up"):
         rules.intent = "follow_up"
         if not rules.hazards_explicit:
-            hazards = [hazard for hazard in model_intent.hazards if hazard in HAZARDS]
+            hazards = [hazard for hazard in model_intent.hazards if hazard in HAZARDS and hazard not in rules.excluded_hazards]
             if hazards:
                 rules.hazards = hazards
                 rules.hazards_explicit = True
-        if rules.time_window is None and model_intent.time_window in WINDOWS:
+        if rules.time_window is None and model_intent.time_window in WINDOWS and not rules.unsupported_window:
             rules.time_window = model_intent.time_window
         return rules
     if rules.intent == "unknown" and model_intent.intent in {
@@ -131,11 +170,10 @@ def _merge(rules: ParsedMessage, model_intent) -> ParsedMessage:
         "follow_up",
     }:
         rules.intent = model_intent.intent
-    if not rules.hub_ids:
-        rules.hub_ids = [hub_id for hub_id in model_intent.hub_ids if hub_id in HUB_BY_ID]
-    if rules.region is None and model_intent.region in REGIONS:
-        rules.region = model_intent.region
-        rules.region_explicit = True
+    if not named_hubs:
+        rules.hub_ids = []
+    if not rules.region_explicit:
+        rules.region = None
     if not rules.hazards_explicit:
         hazards = [hazard for hazard in model_intent.hazards if hazard in HAZARDS]
         if hazards:
@@ -143,13 +181,17 @@ def _merge(rules: ParsedMessage, model_intent) -> ParsedMessage:
             rules.hazards_explicit = True
     if rules.metric is None and model_intent.metric in METRICS:
         rules.metric = model_intent.metric
-    if rules.time_window is None and model_intent.time_window in WINDOWS:
+    if rules.time_window is None and model_intent.time_window in WINDOWS and not rules.unsupported_window:
         rules.time_window = model_intent.time_window
+    if rules.unsupported_window:
+        rules.time_window = "last_calendar_year"
     return rules
 
 
 def _targets(resolved) -> tuple[list[str] | None, str | None]:
-    if resolved.intent == "rank_hubs" and resolved.region and not resolved.hub_ids:
+    if resolved.intent == "alerts":
+        return None, None
+    if resolved.intent == "rank_hubs" and not resolved.hub_ids:
         return None, resolved.region
     if resolved.hub_ids:
         return list(resolved.hub_ids), None

@@ -6,6 +6,7 @@ If that cannot be done safely, the agent asks one clarifying question.
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 
@@ -48,6 +49,8 @@ class SessionContext:
     last_intent: str | None = None
     last_result_hub_ids: list[str] = field(default_factory=list)
     last_user_message: str = ""
+    offered_breakdown: bool = False
+    focus_hub_id: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict | None) -> "SessionContext":
@@ -61,6 +64,8 @@ class SessionContext:
             last_intent=raw.get("last_intent"),
             last_result_hub_ids=[hub_id for hub_id in raw.get("last_result_hub_ids") or [] if hub_id in HUB_BY_ID],
             last_user_message=str(raw.get("last_user_message") or "")[:500],
+            offered_breakdown=bool(raw.get("offered_breakdown")),
+            focus_hub_id=raw.get("focus_hub_id") if raw.get("focus_hub_id") in HUB_BY_ID else None,
         )
 
     def to_dict(self) -> dict:
@@ -73,6 +78,8 @@ class SessionContext:
             "last_intent": self.last_intent,
             "last_result_hub_ids": self.last_result_hub_ids,
             "last_user_message": self.last_user_message,
+            "offered_breakdown": self.offered_breakdown,
+            "focus_hub_id": self.focus_hub_id,
         }
 
     def for_intent_parser(self) -> dict:
@@ -104,6 +111,11 @@ class ParsedMessage:
     unknown_place: str | None = None
     inherited: bool = False
     detail: str | None = None
+    excluded_hazards: list[str] = field(default_factory=list)
+    ordinal_index: int | None = None
+    unsupported_window: bool = False
+    explain_gap: bool = False
+    text: str = ""
 
 
 @dataclass
@@ -121,6 +133,9 @@ class ResolvedIntent:
     detail: str | None = None
     question: str = ""
     prior_question: str = ""
+    excluded_hazards: list[str] = field(default_factory=list)
+    unsupported_window: bool = False
+    explain_gap: bool = False
 
     def view(self) -> dict:
         return {
@@ -138,42 +153,84 @@ class ResolvedIntent:
 def parse_message(message: str) -> ParsedMessage:
     text = " ".join(message.strip().split())
     low = text.lower()
+    if _non_english(text):
+        return ParsedMessage(intent="unsupported_language")
+    if re.fullmatch(r"(?:hi|hello|hey|thanks|thank you|good morning|good afternoon)[.!]?", low):
+        return ParsedMessage(intent="greeting")
     occupied = [False] * len(low)
     hub_ids = _mark_aliases(low, ALIASES, occupied)
+    hub_ids.extend(_fuzzy_hubs(low, occupied, hub_ids))
     unknown = _first_outside(low, occupied)
     region = _find_region(low)
-    hazards = [name for name, pattern in _HAZARD_PATTERNS if pattern.search(low)]
+    excluded = _negated_hazards(low)
+    hazards = [name for name, pattern in _HAZARD_PATTERNS if pattern.search(low) and name not in excluded]
     metric = _metric(low)
     window = _window(low)
+    unsupported_window = _unsupported_window(low)
+    if unsupported_window:
+        window = "last_calendar_year"
     why = bool(re.search(r"\b(why|explain|drivers?|how come)\b", low))
+    ordinal = _ordinal_index(low)
     asks_why_top = bool(why and not hub_ids and re.search(r"\b(top|first|highest|that one)\b", low))
-    metric_q = bool(re.search(r"\b(percent|percentage|how many days|share of days)\b", low))
+    metric_q = bool(re.search(r"\b(percent|percentage|how many(?:\s+\w+){0,3}\s+days|share of days)\b|%", low))
     compare = bool(re.search(r"\b(compare|comparison|versus|vs\.?|between)\b", low))
     rank = bool(re.search(r"\b(which|most|least|ranking|rank|highest|lowest|exposed|riskiest|safest|safer)\b", low))
-    followish = bool(re.search(r"\b(what about|how about|instead|the top one|the first one|that one)\b|מה לגבי|ומה לגבי", low)) or (
+    refers = _refers_back(low)
+    followish = bool(refers or re.search(r"מה לגבי|ומה לגבי", low)) or (
         (" only" in f" {low}" or "בלבד" in low) and not compare and not rank and not why and not metric_q
     )
     asks_safer = bool(re.search(r"\b(safer|safest)\b", low))
     detail = _detail_request(low)
+    breakdown_ask = bool(
+        re.search(r"\b(?:full score breakdown|score breakdown|full breakdown|breakdown|why exactly|show details)\b", low)
+    )
+    if hub_ids and re.search(r"\bhow is it calculated\b", low):
+        breakdown_ask = True
+    if breakdown_ask:
+        detail = "breakdown"
+    alerts = bool(re.search(r"\balerts?\b", low)) and not metric_q and not compare
+    methodology = (
+        detail in {"methodology", "sources", "assumptions"}
+        and not breakdown_ask
+        and not metric_q
+        and not compare
+        and not rank
+        and not why
+    )
 
-    if asks_why_top:
+    if re.fullmatch(r"(?:yes|yeah|yep|sure|ok|okay)[.!]?", low):
+        intent = "follow_up"
+    elif ordinal is not None and not hub_ids:
         intent = "explain_hub"
+    elif asks_why_top:
+        intent = "explain_hub"
+        ordinal = 0
+    elif breakdown_ask and not hub_ids and not compare and not rank and not metric_q:
+        intent = "follow_up"
+    elif methodology and not refers:
+        intent = "methodology"
+    elif alerts and not hub_ids and not rank:
+        intent = "alerts"
     elif why:
         intent = "explain_hub"
     elif metric_q:
         intent = "metric_lookup"
     elif compare or (len(hub_ids) >= 2 and not rank):
         intent = "compare_hubs"
-    elif rank or (region and not hub_ids):
+    elif rank or (region and not hub_ids) or excluded:
         intent = "rank_hubs"
     elif detail and not hub_ids and not compare and not rank and not why and not metric_q:
         intent = "follow_up"
     elif followish and not hub_ids:
         intent = "follow_up"
+    elif _window(low) and not hub_ids and not metric_q and not compare and not rank and not why and not breakdown_ask:
+        intent = "follow_up"
     elif len(hub_ids) == 1:
         intent = "explain_hub"
     elif len(hub_ids) >= 2:
         intent = "compare_hubs"
+    elif not _weatherish(low) and not unknown:
+        intent = "off_topic"
     else:
         intent = "unknown"
 
@@ -190,21 +247,32 @@ def parse_message(message: str) -> ParsedMessage:
         asks_safer=asks_safer,
         unknown_place=unknown,
         detail=detail,
+        excluded_hazards=excluded,
+        ordinal_index=ordinal,
+        unsupported_window=unsupported_window,
+        text=text,
     )
 
 
 def resolve_intent(parsed: ParsedMessage, context: SessionContext | None) -> ResolvedIntent:
     context = context or SessionContext()
+    if parsed.intent in {"unsupported_language", "greeting", "off_topic", "methodology", "alerts"}:
+        return _ok(parsed)
     if parsed.unknown_place:
         return _clarify(
             f"I don't cover {parsed.unknown_place}. This demo only scores {hub_names()}.",
             parsed,
         )
+    if parsed.intent == "follow_up" and _bare_yes(parsed.text) and context.offered_breakdown:
+        parsed.detail = "breakdown"
+    if parsed.ordinal_index is not None and not parsed.hub_ids:
+        return _from_ordinal(parsed, context)
     if parsed.asks_why_top:
         return _why_top(parsed, context)
     if parsed.asks_safer:
         return _safer(parsed, context)
 
+    parsed = _preserve_intent_for_window(parsed, context)
     parsed = _maybe_inherit(parsed, context)
     if parsed.intent in {"unknown", "follow_up"}:
         return _clarify(
@@ -214,6 +282,33 @@ def resolve_intent(parsed: ParsedMessage, context: SessionContext | None) -> Res
     problem = _slot_problem(parsed)
     if problem:
         return _clarify(problem, parsed)
+    return _ok(parsed)
+
+
+def _from_ordinal(parsed: ParsedMessage, context: SessionContext) -> ResolvedIntent:
+    ordered = list(context.last_result_hub_ids or context.hub_ids)
+    if not ordered:
+        return _clarify("I don't have a previous ranking to point at. Which hub should I explain?", parsed)
+    index = parsed.ordinal_index if parsed.ordinal_index is not None else 0
+    if index < 0:
+        index = len(ordered) - 1
+    if index >= len(ordered):
+        return _clarify(f"The previous result only has {len(ordered)} hubs.", parsed)
+    parsed.intent = "explain_hub"
+    parsed.region = None
+    parsed.region_explicit = False
+    if _asks_why_lower(parsed.text) and index != 0:
+        parsed.explain_gap = True
+        parsed.hub_ids = [ordered[0], ordered[index]]
+        if not parsed.hazards_explicit:
+            parsed.hazards = list(context.hazards)
+    else:
+        parsed.hub_ids = [ordered[index]]
+        if not parsed.hazards_explicit:
+            parsed.hazards = []
+    if parsed.time_window is None:
+        parsed.time_window = context.time_window
+    parsed.inherited = True
     return _ok(parsed)
 
 
@@ -256,15 +351,64 @@ def _safer(parsed: ParsedMessage, context: SessionContext) -> ResolvedIntent:
             parsed,
         )
     if region is None and not hubs:
-        return _clarify(
-            "Safer here means a lower weather-disruption score, not an emergency judgment. Which hubs or region should I compare?",
-            parsed,
+        return ResolvedIntent(
+            "rank_hubs",
+            [],
+            None,
+            hazards,
+            None,
+            window,
+            False,
+            None,
+            True,
+            False,
+            parsed.detail,
         )
     return ResolvedIntent("rank_hubs", hubs, region, hazards, None, window, False, None, True, inherited, parsed.detail)
 
 
+def _preserve_intent_for_window(parsed: ParsedMessage, context: SessionContext) -> ParsedMessage:
+    """A month or custom range keeps the question already in progress and says so."""
+    if not parsed.unsupported_window or not context.last_intent:
+        return parsed
+    if context.last_intent in {"greeting", "off_topic", "unsupported_language", "methodology", "alerts"}:
+        return parsed
+    low = parsed.text.lower()
+    starts_new = bool(re.search(r"\b(why|explain|compare|versus|vs\.?|which|most|least|rank|ranking|safest|safer|between)\b", low))
+    if parsed.intent == "metric_lookup" or (starts_new and parsed.intent != "follow_up"):
+        return parsed
+    intent = context.last_intent
+    hubs = list(parsed.hub_ids)
+    region = parsed.region
+    if intent == "compare_hubs" and not hubs:
+        hubs = list(context.hub_ids or context.last_result_hub_ids)
+    elif intent == "rank_hubs":
+        if not parsed.region_explicit:
+            region = context.region
+        if not hubs and region is None:
+            hubs = list(context.hub_ids or context.last_result_hub_ids)
+        elif region is not None and not parsed.hub_ids:
+            hubs = []
+    elif intent in {"explain_hub", "metric_lookup"} and not hubs:
+        hubs = list((context.hub_ids or context.last_result_hub_ids)[:1])
+    parsed.intent = intent
+    parsed.hub_ids = hubs
+    parsed.region = region
+    if not parsed.hazards_explicit:
+        parsed.hazards = list(context.hazards)
+    if parsed.metric is None:
+        parsed.metric = context.metric
+    parsed.time_window = "last_calendar_year"
+    parsed.unsupported_window = True
+    parsed.inherited = True
+    return parsed
+
+
 def _maybe_inherit(parsed: ParsedMessage, context: SessionContext) -> ParsedMessage:
     if parsed.intent != "follow_up" or not context.last_intent:
+        return parsed
+    window_shift = bool(parsed.time_window) and not parsed.hub_ids
+    if parsed.detail != "breakdown" and not _refers_back(parsed.text) and not window_shift:
         return parsed
     hubs = list(parsed.hub_ids)
     region = parsed.region
@@ -286,7 +430,7 @@ def _maybe_inherit(parsed: ParsedMessage, context: SessionContext) -> ParsedMess
         intent = "rank_hubs"
     elif intent == "explain_hub":
         if not hubs:
-            hubs = list((context.hub_ids or context.last_result_hub_ids)[:1])
+            hubs = [context.focus_hub_id] if context.focus_hub_id else list((context.hub_ids or context.last_result_hub_ids)[:1])
         intent = "explain_hub"
     elif intent == "metric_lookup":
         if parsed.hazards_explicit and not parsed.metric:
@@ -294,7 +438,7 @@ def _maybe_inherit(parsed: ParsedMessage, context: SessionContext) -> ParsedMess
         else:
             intent = "metric_lookup"
         if not hubs:
-            hubs = list((context.hub_ids or context.last_result_hub_ids)[:1])
+            hubs = [context.focus_hub_id] if context.focus_hub_id else list((context.hub_ids or context.last_result_hub_ids)[:1])
     parsed.intent = intent or "unknown"
     parsed.hub_ids = hubs
     parsed.region = region
@@ -310,7 +454,7 @@ def _slot_problem(parsed: ParsedMessage) -> str | None:
         return "Which two hubs should I compare?"
     if parsed.intent == "explain_hub" and len(parsed.hub_ids) == 0:
         return "Which hub should I explain?"
-    if parsed.intent == "explain_hub" and len(parsed.hub_ids) > 1:
+    if parsed.intent == "explain_hub" and len(parsed.hub_ids) > 1 and not parsed.explain_gap:
         parsed.intent = "compare_hubs"
         return None
     if parsed.intent == "metric_lookup" and len(parsed.hub_ids) != 1:
@@ -333,6 +477,9 @@ def _ok(parsed: ParsedMessage) -> ResolvedIntent:
         safety_framing=False,
         inherited=parsed.inherited,
         detail=parsed.detail,
+        excluded_hazards=list(parsed.excluded_hazards),
+        unsupported_window=parsed.unsupported_window,
+        explain_gap=parsed.explain_gap,
     )
 
 
@@ -347,6 +494,106 @@ def _clarify(question: str, parsed: ParsedMessage) -> ResolvedIntent:
         needs_clarification=True,
         clarifying_question=question,
     )
+
+
+def _non_english(text: str) -> bool:
+    return bool(re.search(r"[^\x00-\x7F]", text))
+
+
+def _refers_back(low: str) -> bool:
+    text = low.lower()
+    return bool(
+        re.search(
+            r"\b(it|them|those|that hub|those hubs|the same|what about|how about|instead|the top one|the first one|the second one|the third one|the last one|full score breakdown|score breakdown|full breakdown|breakdown|why exactly|show details)\b|#\s*[123]\b",
+            text,
+        )
+    )
+
+
+def _weatherish(low: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(weather|risk|risks|hubs?|disrupt\w*|expos\w*|snow|rain|flood\w*|heat|hurricane\w*|winter|storms?|alerts?|scores?|sources?|method\w*|weights?|assumptions?|safer|safest|compare|rank\w*|window)\b",
+            low,
+        )
+    )
+
+
+def _negated_hazards(low: str) -> list[str]:
+    verbs = r"ignore|without|excluding|except|exclude|excluded|drop|not counting|leave out"
+    found = []
+    for name, pattern in _HAZARD_PATTERNS:
+        before = rf"\b(?:{verbs})\b(?:\W+\w+){{0,4}}\W*(?:{pattern.pattern})"
+        after = rf"(?:{pattern.pattern})(?:\W+\w+){{0,3}}\W*\b(?:{verbs})\b"
+        if re.search(before, low) or re.search(after, low):
+            found.append(name)
+    return found
+
+
+def _bare_yes(text: str) -> bool:
+    return bool(re.fullmatch(r"(?:yes|yeah|yep|sure|ok|okay)[.!]?", text.strip().lower()))
+
+
+def _asks_why_lower(text: str) -> bool:
+    low = text.lower()
+    return bool(re.search(r"\bwhy\b", low) and re.search(r"\blower\b", low))
+
+
+def _fuzzy_hubs(low: str, occupied: list[bool], already: list[str]) -> list[str]:
+    """A close spelling of a hub name counts as naming that hub. 'Dalas' is Dallas."""
+    choices = [(alias, hub_id) for alias, hub_id in ALIASES if " " not in alias and len(alias) >= 4]
+    found: list[tuple[int, str]] = []
+    seen = set(already)
+    for match in re.finditer(r"[a-z]{4,}", low):
+        if any(occupied[match.start() : match.end()]):
+            continue
+        token = match.group(0)
+        best_id = None
+        best_ratio = 0.0
+        for alias, hub_id in choices:
+            if abs(len(alias) - len(token)) > 2:
+                continue
+            ratio = difflib.SequenceMatcher(None, token, alias).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_id = hub_id
+        if best_id is None or best_ratio < 0.8 or best_id in seen:
+            continue
+        seen.add(best_id)
+        for index in range(match.start(), match.end()):
+            occupied[index] = True
+        found.append((match.start(), best_id))
+    found.sort(key=lambda item: item[0])
+    return [hub_id for _, hub_id in found]
+
+
+def _ordinal_index(low: str) -> int | None:
+    if re.search(r"#\s*1\b|\b1st\b|\bfirst one\b|\bthe top one\b|\btop one\b", low):
+        return 0
+    if re.search(r"#\s*2\b|\b2nd\b|\bsecond one\b", low):
+        return 1
+    if re.search(r"#\s*3\b|\b3rd\b|\bthird one\b", low):
+        return 2
+    if re.search(r"\blast one\b", low):
+        return -1
+    return None
+
+
+def _unsupported_window(low: str) -> bool:
+    if _window(low) in {"last_calendar_year", "trailing_365", "last_winter"}:
+        return False
+    if re.search(
+        r"\b(january|february|march|april|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b",
+        low,
+    ):
+        return True
+    if re.search(r"\b(?:in|during|for)\s+may\b|\bmay\s+\d{4}\b", low):
+        return True
+    if re.search(r"\b(q[1-4]|this month|last month|custom range)\b", low):
+        return True
+    if re.search(r"\bfrom\s+\d{4}-\d{2}-\d{2}\b|\bbetween\s+\w+\s+\d{4}\b", low):
+        return True
+    return False
 
 
 def _detail_request(low: str) -> str | None:

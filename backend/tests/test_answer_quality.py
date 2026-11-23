@@ -5,9 +5,9 @@ from datetime import date
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agent.composer import _draft_is_usable
+from app.agent.composer import WINDOW_NOTICE, _draft_is_usable, apply_model_prose
 from app.agent.llm import ANSWER_SYSTEM
-from app.agent.schemas import AnswerResult, IntentResult
+from app.agent.schemas import AnswerDraft, AnswerResult, IntentResult
 from app.db.repository import get_daily_window, latest_score, save_daily_window, save_score_snapshot, seed_reference_data
 from app.main import create_app
 from app.risk.engine import recompute_stale_scores
@@ -34,19 +34,42 @@ def _chat(client: TestClient, message: str, session_id: str | None = None) -> di
     return body
 
 
-def test_prompt_keeps_every_contributor():
-    assert "two or three" not in ANSWER_SYSTEM
-    assert "every contributor" in ANSWER_SYSTEM
+def test_prompt_keeps_short_answers():
+    assert "2 or 3" in ANSWER_SYSTEM
+    assert "not a probability" in ANSWER_SYSTEM
     assert ">= 1 cm" in ANSWER_SYSTEM
+    assert "is riskier at" in ANSWER_SYSTEM
 
 
-def test_word_cap_accepts_a_full_contributor_draft():
-    long_enough = " ".join(["briefing"] * 180)
-    assert _draft_is_usable(long_enough, {}, [], "")
-    assert not _draft_is_usable(" ".join(["briefing"] * 230), {}, [], "")
-    skeleton = "Contributors, largest first: heat (4.0) and winter (10.0). These points sum to 14.0."
-    assert _draft_is_usable("heat (4.0) and winter (10.0) stay in the briefing.", {}, [], skeleton)
-    assert not _draft_is_usable("Only winter (10.0) is mentioned in this briefing.", {}, [], skeleton)
+def test_draft_accepts_short_answers_and_checks_numbers():
+    assert _draft_is_usable("Denver is highest at 44.8. Based on 2025 weather data.", {"rankings": [{"focus_score": 44.8}]}, [], "")
+    assert _draft_is_usable(" ".join(["briefing"] * 200), {"rankings": [{"hub_id": "miami"}]}, [], "")
+    assert _draft_is_usable("The gap is 44.9.", {"rankings": [{"hub_id": "miami", "focus_score": 44.8}]}, [], "")
+    assert not _draft_is_usable("The gap is 12.0.", {"rankings": [{"hub_id": "miami", "focus_score": 44.8}]}, [], "")
+    evidence = {"required_notice": WINDOW_NOTICE, "unsupported_window": True, "rankings": [{"focus_score": 4.0}]}
+    assert not _draft_is_usable("Denver had 4 snow days in January.", evidence, [], "")
+    assert not _draft_is_usable(f"{WINDOW_NOTICE} Denver had 4 snow days in January.", evidence, [], "")
+    skeleton = f"{WINDOW_NOTICE} Denver had 4 snow days in calendar year 2025."
+    assert _draft_is_usable(skeleton, evidence, [], "")
+    rejected = apply_model_prose(
+        AnswerResult(answer=skeleton),
+        AnswerDraft(answer="Denver had 4 snow days in January."),
+        None,
+        evidence,
+    )
+    assert rejected.answer == skeleton
+    phrase = "mainly flood (12.4) and hurricane (10.3) of 42.9"
+    why_evidence = {
+        "required_driver_phrase": phrase,
+        "driver_score_traps": [{"name": "winter", "score": 37.8, "points": 11.3}],
+        "rankings": [{"focus_score": 42.9, "drivers": [{"contribution": 12.4}, {"contribution": 10.3}]}],
+    }
+    why_skeleton = f"The Dallas score is 42.9, {phrase}."
+    assert not _draft_is_usable("Dallas is high.", why_evidence, [], "")
+    assert not _draft_is_usable(f"{phrase}. Winter is 37.8.", why_evidence, [], "")
+    assert _draft_is_usable(why_skeleton, why_evidence, [], "")
+    kept = apply_model_prose(AnswerResult(answer=why_skeleton), AnswerDraft(answer="Dallas is high because winter is 37.8."), None, why_evidence)
+    assert kept.answer == why_skeleton
 
 
 def test_snow_answer_leads_with_count_threshold_and_source(client):
@@ -70,9 +93,13 @@ def test_explain_lists_heat_and_skips_unpublished_hurricane(client):
     body = _chat(client, "Why is the Denver hub's weather disruption risk high?")
     text = body["answer"]["answer"]
     assert "Denver hub (Mountain region)" in text
-    assert "heat" in text.lower()
+    assert "Based on 2025 weather data and FEMA risk data." in text
+    assert "not a probability" not in text.lower()
+    assert "weather-day rates" not in text.lower()
     assert "hurricane" not in text.lower()
-    assert "Contributors, largest first" in text
+    assert "other factors" not in body["evidence"]["breakdown"].lower()
+    assert "heat" in body["evidence"]["breakdown"].lower()
+    assert "Want the full score breakdown?" in body["answer"]["follow_up_questions"]
     row = body["evidence"]["rankings"][0]
     assert row["overall_score"] == round(row["overall_score"], 1)
     for driver in row["drivers"]:

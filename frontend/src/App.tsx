@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { ChatResponse, Driver, Evidence, getHealth, Health, sendMessage } from "./api";
+import { ChatResponse, Driver, Evidence, sendMessage } from "./api";
 
 const EXAMPLES = [
   {
@@ -79,8 +79,6 @@ type Thread = {
 };
 
 export function App() {
-  const [health, setHealth] = useState<Health | null>(null);
-  const [offline, setOffline] = useState(false);
   const [threads, setThreads] = useState<Thread[]>(loadThreads);
   const [activeId, setActiveId] = useState<string | null>(loadActiveId);
   const [draft, setDraft] = useState("");
@@ -94,10 +92,6 @@ export function App() {
   const active = threads.find((thread) => thread.id === activeId) ?? null;
   const turns = active?.turns ?? [];
   const chatting = turns.length > 0 || pending;
-
-  useEffect(() => {
-    getHealth().then(setHealth).catch(() => setOffline(true));
-  }, []);
 
   useEffect(() => {
     sessionStorage.setItem(THREADS_KEY, JSON.stringify(threads));
@@ -232,10 +226,6 @@ export function App() {
               </button>
             )}
             Weather Risk
-            <span>10 hubs</span>
-          </div>
-          <div className={`live-pill ${offline ? "down" : ""}`}>
-            {offline ? "API offline" : health ? health.data_mode : "Checking API"}
           </div>
         </header>
 
@@ -243,13 +233,11 @@ export function App() {
           {!chatting && (
             <div className="welcome">
               <div className="hero">
-                <h1>Which hubs should we harden?</h1>
-                <p className="subtitle">
-                  Rank weather disruption across ten US logistics hubs. Scores are computed in code. This chat explains them.
-                </p>
+                <h1>Where is the weather risk?</h1>
+                <p className="subtitle">Ask about winter, floods, hurricanes, or a single hub.</p>
               </div>
               {error && <div className="error">{error}</div>}
-              <Composer draft={draft} pending={pending} hubCount={health?.hub_count} onDraft={setDraft} onSubmit={onSubmit} onAsk={ask} />
+              <Composer draft={draft} pending={pending} onDraft={setDraft} onSubmit={onSubmit} onAsk={ask} />
               <div className="topics">
                 {EXAMPLES.map((example) => (
                   <button key={example.title} type="button" className="topic" disabled={pending} onClick={() => void ask(example.prompt)}>
@@ -280,7 +268,7 @@ export function App() {
                 <div ref={endRef} />
               </div>
               {error && <div className="error">{error}</div>}
-              <Composer draft={draft} pending={pending} hubCount={health?.hub_count} onDraft={setDraft} onSubmit={onSubmit} onAsk={ask} />
+              <Composer draft={draft} pending={pending} onDraft={setDraft} onSubmit={onSubmit} onAsk={ask} />
             </>
           )}
         </div>
@@ -292,14 +280,12 @@ export function App() {
 function Composer({
   draft,
   pending,
-  hubCount,
   onDraft,
   onSubmit,
   onAsk,
 }: {
   draft: string;
   pending: boolean;
-  hubCount?: number;
   onDraft: (value: string) => void;
   onSubmit: (event: FormEvent) => void;
   onAsk: (text: string) => void;
@@ -319,7 +305,6 @@ function Composer({
         }}
       />
       <div className="composer-bar">
-        <span className="scope-pill">{hubCount ? `${hubCount} hubs` : "10 hubs"}</span>
         <button className="send" type="submit" aria-label="Send" disabled={pending || !draft.trim()}>
           <ArrowIcon />
         </button>
