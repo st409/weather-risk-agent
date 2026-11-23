@@ -1876,7 +1876,7 @@ def _investment_sentence(report: HubReport) -> str:
         phrases.append(readiness.get(name, f"{HAZARD_LABEL[name]} readiness"))
     if not phrases:
         return ""
-    return f"Based on those risk drivers, the suggestion is {_join(phrases[:2])}."
+    return f"Based on those risk drivers, I'd prioritize {_join(phrases[:2])}."
 
 
 def _ranked_drivers(report: HubReport, hazards: list[str]):
@@ -2070,7 +2070,8 @@ def _prepare_draft(text: str, skeleton: str) -> str:
         match = re.search(r"Sources:.*", skeleton)
         if match:
             cleaned = f"{cleaned.rstrip()} {match.group(0).strip()}".strip()
-    return cleaned
+    cleaned = _drop_legend_from_reason(cleaned, skeleton)
+    return _own_investment_sentence(cleaned, skeleton)
 
 
 _NUMBER_ONES = {
@@ -2107,8 +2108,42 @@ _NUMBER_TENS = {
 }
 
 
+def _drop_legend_from_reason(text: str, skeleton: str) -> str:
+    """The legend belongs on the Scores line only, and only on the first one."""
+    parts = re.split(r"(?i)(?=\bScores\s*:)", text, maxsplit=1)
+    reason = re.sub(r"\s*\(\s*higher\s*=\s*more exposed\s*\)", "", parts[0], flags=re.I)
+    reason = re.sub(r"\s+([.,;])", r"\1", reason)
+    reason = re.sub(r"[ \t]{2,}", " ", reason)
+    if len(parts) == 1:
+        return reason.strip()
+    scores = parts[1]
+    skeleton_scores = re.split(r"(?i)(?=\bScores\s*:)", skeleton, maxsplit=1)
+    legend_on_scores = len(skeleton_scores) > 1 and re.search(r"higher\s*=\s*more exposed", skeleton_scores[1], re.I)
+    if not legend_on_scores:
+        scores = re.sub(r"\s*\(\s*higher\s*=\s*more exposed\s*\)", "", scores, flags=re.I)
+    return f"{reason.rstrip()} {scores.lstrip()}".strip()
+
+
+def _own_investment_sentence(text: str, skeleton: str) -> str:
+    """Keep the recommendation as its own sentence, not a clause on the FEMA line."""
+    match = re.search(r"Based on those risk drivers, I'd prioritize [^.]+\.", skeleton)
+    if not match:
+        return text
+    sentence = match.group(0)
+    tail_match = re.search(r"(?i)\b(?:Scores|Sources)\s*:.*", text, flags=re.S)
+    body = text[: tail_match.start()] if tail_match else text
+    tail = tail_match.group(0).strip() if tail_match else ""
+    body = re.sub(r"(?i),?\s*(?:and\s+)?(?:based on those risk drivers\b|I'?d prioritize\b).*", "", body, flags=re.S)
+    body = re.sub(r"\s{2,}", " ", body).strip().rstrip(",;")
+    if body and body[-1] not in ".!?":
+        body += "."
+    if sentence not in body:
+        body = f"{body} {sentence}".strip()
+    return f"{body} {tail}".strip()
+
+
 def _spell_numbers(text: str) -> str:
-    """'ten' and 'two point seven' count as the same facts as 10 and 2.7."""
+    """'seventeen' and 'four point seven' count as the same facts as 17 and 4.7."""
     ones = "|".join(sorted(_NUMBER_ONES, key=len, reverse=True))
     tens = "|".join(sorted(_NUMBER_TENS, key=len, reverse=True))
 
@@ -2126,10 +2161,18 @@ def _spell_numbers(text: str) -> str:
             whole = _NUMBER_TENS[left]
         else:
             whole = int(left)
-        fraction = _NUMBER_ONES[right] if right in _NUMBER_ONES else int(right)
-        return f"{whole}.{fraction}"
+        if right in _NUMBER_ONES:
+            return f"{whole}.{_NUMBER_ONES[right]}"
+        if right in _NUMBER_TENS:
+            return f"{whole}.{_NUMBER_TENS[right]:02d}"
+        return f"{whole}.{int(right)}"
 
-    spoken = re.sub(rf"\b(\d+|{tens}|{ones})\s+point\s+(\d|{ones})\b", point, spoken, flags=re.I)
+    spoken = re.sub(
+        rf"\b(\d+|{tens}|{ones})(?:-|\s+)point(?:-|\s+)(\d+|{tens}|{ones})\b",
+        point,
+        spoken,
+        flags=re.I,
+    )
 
     def word(match: re.Match[str]) -> str:
         token = match.group(0).lower()
@@ -2191,12 +2234,12 @@ def _fact_problem(text: str, skeleton: str) -> str | None:
     """Same hubs and the same counts, percents, scores, and contribution points. Wording may change."""
     spoken = text.split("Contributors, largest first", 1)[0]
     base = skeleton.split("Contributors, largest first", 1)[0]
-    needed = {round(value, 1) for value in _fact_numbers(base)}
-    got = {round(value, 1) for value in _fact_numbers(spoken)}
-    missing = sorted(needed - got)
+    needed = _fact_numbers(base)
+    got = _fact_numbers(spoken)
+    missing = _unmatched_numbers(needed, got)
     if missing:
         return f"missing fact {missing[0]:g}"
-    extra = sorted(got - needed)
+    extra = [value for value in got if not any(abs(value - item) <= 0.1 + 1e-9 for item in needed)]
     if extra:
         return f"extra fact {extra[0]:g}"
     base_hubs = set(_mentioned_hubs(base))

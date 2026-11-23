@@ -815,7 +815,7 @@
     "turns": ["Where should we invest to reduce weather disruption?"],
     "expect": {
       "intent": "rank_hubs",
-      "answer_contains": ["most vulnerable", "Based on those risk drivers", "suggestion", "Scores:", "Sources:"],
+      "answer_contains": ["most vulnerable", "Based on those risk drivers, I'd prioritize", "Scores:", "Sources:"],
       "answer_excludes": ["$", "cost", "million", "score of.", "score for"],
       "opening_has_no_digits": true,
       "no_fallback": true,

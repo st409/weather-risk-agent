@@ -162,9 +162,12 @@ def test_score_clauses_are_removed_whole():
     for skeleton, draft in ((rank, rank_draft), (safest, safest_draft), (excluded, excluded_draft), (compared, compared_draft)):
         shown = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=draft), None, {})
         assert shown.fallback is False
-        assert shown.answer == draft.strip()
+        assert shown.answer.lower().count("higher = more exposed") == 1
         assert "score of." not in shown.answer.lower()
         assert "score for" not in shown.answer.lower() or not shown.answer.lower().rstrip().endswith("is.")
+    assert "The overall scores are Dallas 81.2 and Atlanta 39.9." in apply_model_prose(
+        AnswerResult(answer=compared), AnswerDraft(answer=compared_draft), None, {}
+    ).answer
 
 
 def test_day_count_words_and_a_missing_notice_still_keep_the_draft():
@@ -179,6 +182,14 @@ def test_day_count_words_and_a_missing_notice_still_keep_the_draft():
     assert _fact_numbers("ten") == []
     assert _fact_numbers("eight") == [8.0]
     assert _fact_numbers("2.7 percent") == [2.7]
+    assert _fact_numbers("seventeen") == [17.0]
+    assert _fact_numbers("four point seven percent") == [4.7]
+    assert _fact_numbers("four-point-seven percent") == [4.7]
+    snow = "Denver hub (Mountain region) had 17 snow days (4.7% of the year). A snow day is daily snowfall >= 1 cm."
+    spoken_snow = "Denver hub (Mountain region) had seventeen snow days, four point seven percent of the year. A snow day is daily snowfall >= 1 cm."
+    assert _draft_is_usable(spoken_snow, {}, [], snow)
+    miami = "Houston had 14 heavy-rain days and Miami had 5. Scores: hurricane Houston 80.0, Miami 80.0; flood Houston 44.9, Miami 40.2."
+    assert _draft_is_usable(miami.replace("44.9", "44.9, about forty-five"), {}, [], miami)
     assert _draft_is_usable(draft, {}, [], skeleton)
     assert _draft_is_usable(draft.replace("two point seven percent", "2.7 percent"), {}, [], skeleton)
     assert not _draft_is_usable(draft.replace("eight", "nine"), {}, [], skeleton)
@@ -328,21 +339,40 @@ def test_rank_explains_second_and_third(client):
     assert not any(char.isdigit() for char in text.split(".", 1)[0])
 
 
+def test_investment_recommendation_is_its_own_sentence():
+    skeleton = (
+        "New York/Newark is the most vulnerable hub to weather disruption. "
+        "FEMA rates it a high historical hurricane-risk area. "
+        "Based on those risk drivers, I'd prioritize hurricane and flood protection and winter readiness. "
+        "Scores: New York/Newark 46.8 (higher = more exposed)."
+    )
+    glued = (
+        "New York/Newark is the most vulnerable hub to weather disruption. "
+        "FEMA rates it a high historical hurricane-risk area, and based on those risk drivers, I'd prioritize hurricane and flood protection and winter readiness. "
+        "Scores: New York/Newark 46.8 (higher = more exposed)."
+    )
+    shown = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=glued), None, {})
+    assert shown.fallback is False
+    assert "area. Based on those risk drivers, I'd prioritize hurricane and flood protection and winter readiness." in shown.answer
+    assert shown.answer.lower().count("higher = more exposed") == 1
+
+
 def test_where_to_invest_suggests_from_the_leaders_drivers(client):
     body = _chat(client, "Where should we invest to reduce weather disruption?")
     text = body["answer"]["answer"]
     assert body["intent"]["intent"] == "rank_hubs"
     assert "most vulnerable" in text
-    assert "Based on those risk drivers, the suggestion is" in text
+    assert "Based on those risk drivers, I'd prioritize" in text
     suggestion = text.split("Based on those risk drivers", 1)[1].split("Scores:", 1)[0]
     assert not any(char.isdigit() for char in suggestion)
+    assert text.split("Scores:", 1)[0].rstrip().endswith(".")
     assert "$" not in text
     assert "cost" not in text.lower()
     strengthened = _chat(client, "What should we strengthen in Miami?")
     miami = strengthened["answer"]["answer"]
     assert strengthened["intent"]["intent"] == "explain_hub"
     assert "Miami" in miami
-    assert "Based on those risk drivers, the suggestion is" in miami
+    assert "Based on those risk drivers, I'd prioritize" in miami
     assert not any(char.isdigit() for char in miami.split("Based on those risk drivers", 1)[1].split("Scores:", 1)[0])
 
 
