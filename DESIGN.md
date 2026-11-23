@@ -61,6 +61,26 @@ weather-risk-agent/
 
 Direct score routes exist so the system is not only a chatbot.
 
+## How the components connect
+
+A chat question crosses every component. A direct score request skips the model.
+
+The React UI sends `POST /api/chat` with the text and a `session_id`. `chat.py` checks the rate limit and calls `orchestrator.handle_chat`. From there the orchestrator is the only coordinator.
+
+1. It loads the previous turn from SQLite: hubs, region, hazards, window, and the last message.
+2. `session_context.py` parses the sentence with rules. An explicit hub or hazard stays as written.
+3. When a key is set, `llm.py` asks the model for an intent JSON. `schemas.py` checks the shape. One failure retries, then the rules stand.
+4. `session_context.py` fills a follow-up from that memory. "What about floods only?" keeps the same hubs and changes only the hazard.
+5. When a score is needed, `risk/engine.py` gathers the inputs. `hubs.py` supplies the ten hubs, `weather.py` fetches the Open-Meteo archive and the NWS alerts, `hazards.py` supplies the FEMA snapshot, and `scoring.py` computes the numbers. A saved result comes back from SQLite without a new call.
+6. `composer.py` builds a wording skeleton from those scores.
+7. When a key is set, `llm.py` sends the skeleton for a rephrase. The schema has `answer` and `follow_up_questions` only. There is no score field.
+8. `composer.py` checks the draft. A number, name, or sentence that was not in the skeleton is rejected, and the user gets the skeleton.
+9. The orchestrator writes the messages, the updated context, and the score snapshot to SQLite, and returns `answer`, `intent`, and `evidence`.
+
+The UI shows the answer text, including the scores line and the sources sentence. A breakdown, the assumptions, and the full source list appear only when the question asked for them.
+
+`GET /api/hubs`, `GET /api/hubs/{id}/risk`, `GET /api/compare`, and `POST /api/admin/refresh-scores` enter at `hubs.py`. They call the same risk engine and SQLite. They do not pass through the orchestrator or the model.
+
 ## Data
 
 Historical daily weather is the Open-Meteo archive (`temperature_2m_max`, `temperature_2m_min`, `precipitation_sum`, `snowfall_sum`, `wind_gusts_10m_max`), in Fahrenheit, inches, and mph. Snowfall stays in centimeters. No token. This is the reproducible live source. NOAA CDO is not used.
