@@ -206,7 +206,7 @@ def parse_message(message: str) -> ParsedMessage:
     rank = bool(re.search(r"\b(which|most|least|ranking|rank|highest|lowest|exposed|riskiest|safest|safer)\b", low))
     refers = _refers_back(low)
     followish = bool(refers) or (" only" in f" {low}" and not compare and not rank and not why and not metric_q)
-    asks_safer = bool(re.search(r"\b(safer|safest)\b", low))
+    asks_safer = bool(re.search(r"\b(safer|safest|lowest|least)\b", low)) and not re.search(r"\bat least\b", low)
     detail = _detail_request(low)
     breakdown_ask = bool(
         re.search(r"\b(?:full score breakdown|score breakdown|full breakdown|breakdown|why exactly|show details)\b", low)
@@ -542,7 +542,7 @@ def _ok(parsed: ParsedMessage) -> ResolvedIntent:
         time_window=parsed.time_window,
         needs_clarification=False,
         clarifying_question=None,
-        safety_framing=False,
+        safety_framing=parsed.asks_safer,
         inherited=parsed.inherited,
         detail=parsed.detail,
         excluded_hazards=list(parsed.excluded_hazards),
@@ -788,7 +788,10 @@ def _detail_request(low: str) -> str | None:
         return "sources"
     if re.search(r"\b(assumptions?|limitations?|definitions?)\b", low):
         return "assumptions"
-    if re.search(r"\b(methodolog\w*|breakdown|weights?|how (?:is|are|do you).{0,40}(?:score|index|calculated|computed))\b", low):
+    if re.search(
+        r"\b(methodolog\w*|breakdown|weights?|how (?:is|are|does|do you).{0,60}(?:scores?|scoring|index|calculat\w*|computed))\b",
+        low,
+    ):
         return "methodology"
     if re.search(r"\b(evidence|break ?down|what (?:are|were) the drivers|show (?:me )?(?:the )?(?:drivers|math))\b", low):
         return "evidence"

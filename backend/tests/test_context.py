@@ -473,3 +473,26 @@ def test_alerts_name_the_hub_and_airport_codes_are_uppercase_only():
     assert _resolve("what about lax?").hub_ids == []
     assert _resolve("How is DEN doing?").hub_ids == []
     assert _resolve("Tell me about LA").hub_ids == []
+
+
+def test_lowest_and_least_use_safety_framing():
+    for question in (
+        "Which hub has the lowest weather risk?",
+        "Which hub has the least risk?",
+        "Which hub has the lowest risk?",
+    ):
+        resolved = _resolve(question)
+        assert resolved.intent == "rank_hubs"
+        assert resolved.safety_framing is True
+        assert resolved.needs_clarification is False
+
+
+def test_score_methodology_questions_are_not_unknown():
+    for question in (
+        "How do you calculate the scores?",
+        "How are the scores calculated?",
+        "How does the scoring work?",
+    ):
+        resolved = _resolve(question)
+        assert resolved.intent == "methodology", question
+        assert resolved.needs_clarification is False

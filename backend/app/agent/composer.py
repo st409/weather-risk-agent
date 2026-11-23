@@ -311,7 +311,8 @@ def _rank_opening(resolved: ResolvedIntent, reports: list[HubReport], seen: set[
         dropped = _join([HAZARD_LABEL[hazard] for hazard in resolved.excluded_hazards])
         return f"{leader.name} is the most exposed hub after removing {dropped}."
     if _plural_question(resolved) and len(reports) >= 2:
-        names = _name_list(reports[:3])
+        shown = reports if _lists_every_ranked_hub(resolved, reports) else reports[:3]
+        names = _name_list(shown)
         gap = abs(_rank_score(resolved, reports[0]) - _rank_score(resolved, reports[1]))
         ahead = "slightly ahead" if gap <= 5 else "on top"
         return f"{names} are the most exposed to {topic}, with {leader.name} {ahead}."
@@ -361,11 +362,21 @@ def _scored_reports(resolved: ResolvedIntent, reports: list[HubReport]) -> list[
     if not reports:
         return []
     tied = _tied_leaders(resolved, reports)
+    if _lists_every_ranked_hub(resolved, reports):
+        return reports
     if len(tied) >= 2 and not resolved.safety_framing:
         return tied[:3]
     if resolved.safety_framing or (_plural_question(resolved) and len(reports) >= 2):
         return reports[:3]
     return reports[:1]
+
+
+def _lists_every_ranked_hub(resolved: ResolvedIntent, reports: list[HubReport]) -> bool:
+    """'Rank all hubs' and a small ranked set name every hub, not a top-three cut."""
+    question = (resolved.question or "").lower()
+    if re.search(r"\brank\s+(?:all\s+(?:the\s+)?(?:\d+\s+)?)?(?:the\s+)?hubs\b", question):
+        return True
+    return 0 < len(reports) <= 4
 
 
 
@@ -1247,7 +1258,7 @@ def canned_answer(resolved: ResolvedIntent) -> AnswerResult:
         f"Scores use calendar year {last_calendar_year()} unless you ask for the last 365 days. "
         "Fixed overall weights are winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, and heat 0.10. "
         "A missing input is dropped and the remaining weights are renormalized. A snow day is daily snowfall >= 1 cm. "
-        "The score is a 0-100 index, not a probability. "
+        "Python computes the scores. The score is a 0-100 index, not a probability. "
         f"Weather is pulled from Open-Meteo when a question needs it, and the FEMA snapshot was retrieved {fema_retrieved}. "
         "Uncertainty: weather days are a single year, NWS shows only alerts active now, and FEMA is a static county snapshot. "
         "Sources: Open-Meteo archive, NWS active alerts, and the FEMA National Risk Index snapshot."

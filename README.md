@@ -42,6 +42,8 @@ On Windows, if `make` is not installed:
 python scripts/tasks.py setup
 python scripts/tasks.py seed
 python scripts/tasks.py dev
+python scripts/tasks.py test
+python scripts/tasks.py eval
 ```
 
 `python` must be 3.10 or newer. The setup script will look for 3.10+ via the `py` launcher if the default interpreter is older.

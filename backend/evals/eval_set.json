@@ -198,12 +198,14 @@
       "needs_clarification": false,
       "rankings_count": 10,
       "answer_contains": [
+        "Los Angeles",
         "least exposed",
         "disruption",
         "riskier",
         "Scores:"
       ],
       "answer_excludes": [
+        "New York/Newark",
         "is lower",
         "is riskier at"
       ]
@@ -1513,6 +1515,147 @@
       "no_fallback": true,
       "one_sources_line": true,
       "one_recommendation": true
+    }
+  },
+  {
+    "id": "lowest_weather_risk_is_los_angeles",
+    "turns": [
+      "Which hub has the lowest weather risk?"
+    ],
+    "expect": {
+      "intent": "rank_hubs",
+      "needs_clarification": false,
+      "rankings_count": 10,
+      "answer_contains": [
+        "Los Angeles is the least exposed",
+        "Scores:"
+      ],
+      "answer_excludes": [
+        "New York/Newark",
+        "is the most exposed"
+      ]
+    }
+  },
+  {
+    "id": "safest_hub_is_los_angeles",
+    "turns": [
+      "Which hub is the safest?"
+    ],
+    "expect": {
+      "intent": "rank_hubs",
+      "needs_clarification": false,
+      "rankings_count": 10,
+      "answer_contains": [
+        "Los Angeles is the least exposed",
+        "Scores:"
+      ],
+      "answer_excludes": [
+        "New York/Newark",
+        "is the most exposed"
+      ]
+    }
+  },
+  {
+    "id": "rank_all_hubs_lists_every_hub_descending",
+    "turns": [
+      "Rank all hubs by weather risk"
+    ],
+    "expect": {
+      "intent": "rank_hubs",
+      "needs_clarification": false,
+      "rankings_count": 10,
+      "rankings_descending": true,
+      "scores_follow_rankings": true,
+      "answer_contains": [
+        "Houston",
+        "New York/Newark",
+        "Dallas",
+        "Detroit",
+        "Chicago",
+        "Minneapolis",
+        "Atlanta",
+        "Miami",
+        "Denver",
+        "Los Angeles",
+        "Scores:"
+      ]
+    }
+  },
+  {
+    "id": "rank_the_south_hubs",
+    "turns": [
+      "Rank the South hubs"
+    ],
+    "expect": {
+      "intent": "rank_hubs",
+      "needs_clarification": false,
+      "rankings_count": 4,
+      "rankings_descending": true,
+      "scores_follow_rankings": true,
+      "answer_contains": [
+        "Houston",
+        "Dallas",
+        "Atlanta",
+        "Miami",
+        "Scores:"
+      ],
+      "answer_excludes": [
+        "Chicago",
+        "Los Angeles",
+        "New York/Newark"
+      ]
+    }
+  },
+  {
+    "id": "calculate_the_scores_is_methodology",
+    "turns": [
+      "How do you calculate the scores?"
+    ],
+    "expect": {
+      "intent": "methodology",
+      "needs_clarification": false,
+      "answer_contains": [
+        "Python computes the scores",
+        "0.30",
+        "Sources:"
+      ],
+      "answer_excludes": [
+        "What should I look up?"
+      ]
+    }
+  },
+  {
+    "id": "scores_calculated_is_methodology",
+    "turns": [
+      "How are the scores calculated?"
+    ],
+    "expect": {
+      "intent": "methodology",
+      "needs_clarification": false,
+      "answer_contains": [
+        "Python computes the scores",
+        "0.30"
+      ],
+      "answer_excludes": [
+        "What should I look up?"
+      ]
+    }
+  },
+  {
+    "id": "scoring_work_is_methodology",
+    "turns": [
+      "How does the scoring work?"
+    ],
+    "expect": {
+      "intent": "methodology",
+      "needs_clarification": false,
+      "answer_contains": [
+        "Python computes the scores",
+        "0.30"
+      ],
+      "answer_excludes": [
+        "What should I look up?"
+      ]
     }
   }
 ]

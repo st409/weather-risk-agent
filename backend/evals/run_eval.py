@@ -264,8 +264,46 @@ def _check(expect: dict, body: dict) -> list[str]:
     rankings = (body.get("evidence") or {}).get("rankings") or []
     if expect.get("rankings_count") is not None and len(rankings) != expect["rankings_count"]:
         errors.append(f"rankings {len(rankings)} != {expect['rankings_count']}")
+    if expect.get("rankings_descending"):
+        errors.extend(_descending_errors(rankings))
+    if expect.get("scores_follow_rankings"):
+        errors.extend(_score_order_errors(text, rankings))
     if expect.get("hub_count") is not None and len(intent.get("hub_ids") or []) != expect["hub_count"]:
         errors.append(f"hub count {len(intent.get('hub_ids') or [])} != {expect['hub_count']}")
+    return errors
+
+
+def _descending_errors(rankings: list[dict]) -> list[str]:
+    scores = [row.get("focus_score") for row in rankings]
+    if any(score is None for score in scores):
+        return ["ranking is missing a score"]
+    errors = []
+    for earlier, later in zip(scores, scores[1:]):
+        if earlier < later:
+            errors.append("rankings are not in descending score order")
+            break
+    return errors
+
+
+def _score_order_errors(text: str, rankings: list[dict]) -> list[str]:
+    """The opening and the Scores line name every ranked hub, highest score first."""
+    names = [str(row.get("name") or "") for row in rankings]
+    if not names or any(not name for name in names):
+        return ["rankings have no names"]
+    if "Scores:" not in text:
+        return ["missing scores line"]
+    opening, scores = text.split("Scores:", 1)
+    errors = []
+    for label, part in (("opening", opening), ("scores line", scores)):
+        position = -1
+        for name in names:
+            found = part.find(name)
+            if found < 0:
+                errors.append(f"{label} missing {name}")
+            elif found < position:
+                errors.append(f"{name} is out of descending order in the {label}")
+            else:
+                position = found
     return errors
 
 

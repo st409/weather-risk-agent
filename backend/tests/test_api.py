@@ -272,3 +272,65 @@ def test_chicago_alerts_do_not_load_a_year_of_weather(client, monkeypatch):
     assert body["intent"]["hub_ids"] == ["chicago"]
     assert "Chicago" in body["answer"]["answer"]
     assert "Scores:" not in body["answer"]["answer"]
+
+
+def _names_in_order(text: str, names: list[str]) -> bool:
+    position = -1
+    for name in names:
+        found = text.find(name)
+        if found < position:
+            return False
+        position = found
+    return True
+
+
+def test_lowest_and_safest_name_los_angeles(client):
+    for question in ("Which hub has the lowest weather risk?", "Which hub is the safest?"):
+        body = _chat(client, question)
+        assert body["evidence"]["safety_framing"] is True
+        assert body["intent"]["intent"] == "rank_hubs"
+        text = body["answer"]["answer"]
+        assert text.startswith("Los Angeles is the least exposed")
+        assert "New York/Newark" not in text
+        assert "is the most exposed" not in text
+
+
+def test_methodology_questions_are_not_unknown(client):
+    for question in (
+        "How do you calculate the scores?",
+        "How are the scores calculated?",
+        "How does the scoring work?",
+    ):
+        body = _chat(client, question)
+        assert body["intent"]["intent"] == "methodology"
+        assert body["intent"]["needs_clarification"] is False
+        assert "What should I look up?" not in body["answer"]["answer"]
+        assert "Python computes the scores" in body["answer"]["answer"]
+
+
+def test_rank_all_and_south_list_every_hub_in_order(client):
+    ranked = _chat(client, "Rank all hubs by weather risk")
+    names = [row["name"] for row in ranked["evidence"]["rankings"]]
+    assert names == [
+        "Houston",
+        "New York/Newark",
+        "Dallas",
+        "Detroit",
+        "Chicago",
+        "Minneapolis",
+        "Atlanta",
+        "Miami",
+        "Denver",
+        "Los Angeles",
+    ]
+    text = ranked["answer"]["answer"]
+    opening, scores = text.split("Scores:", 1)
+    assert _names_in_order(opening, names)
+    assert _names_in_order(scores, names)
+    south = _chat(client, "Rank the South hubs")
+    south_names = [row["name"] for row in south["evidence"]["rankings"]]
+    assert south_names == ["Houston", "Dallas", "Atlanta", "Miami"]
+    south_opening, south_scores = south["answer"]["answer"].split("Scores:", 1)
+    assert _names_in_order(south_opening, south_names)
+    assert _names_in_order(south_scores, south_names)
+    assert "Chicago" not in south["answer"]["answer"]
