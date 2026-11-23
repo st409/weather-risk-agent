@@ -290,9 +290,19 @@ function Composer({
   onSubmit: (event: FormEvent) => void;
   onAsk: (text: string) => void;
 }) {
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const field = fieldRef.current;
+    if (!field) return;
+    field.style.height = "24px";
+    field.style.height = `${Math.min(field.scrollHeight, 144)}px`;
+  }, [draft]);
+
   return (
     <form className="composer" onSubmit={onSubmit}>
       <textarea
+        ref={fieldRef}
         aria-label="Message"
         rows={1}
         value={draft}
