@@ -128,6 +128,21 @@ def _check(expect: dict, body: dict) -> list[str]:
         opening = _opening_sentence(text)
         if re.search(r"\d", opening):
             errors.append(f"opening sentence has a digit: {opening}")
+    if "\\n" in text:
+        errors.append('literal "\\n"')
+    if len(re.findall(r"(?i)\bScores\s*:", text)) > 1:
+        errors.append("more than one Scores line")
+    if len(re.findall(r"(?i)\bSources\s*:", text)) > 1:
+        errors.append("more than one Sources line")
+    if expect.get("one_recommendation"):
+        spoken = re.split(r"(?i)\b(?:Scores|Sources)\s*:", text, maxsplit=1)[0]
+        sentences = [
+            part
+            for part in re.split(r"(?<=[.!?])\s+", spoken.strip())
+            if re.search(r"\b(?:recommend\w*|prioriti[sz]\w*)\b", part, re.I)
+        ]
+        if len(sentences) != 1:
+            errors.append(f"expected one recommendation sentence, found {len(sentences)}")
     if expect.get("one_sources_line"):
         if len(re.findall(r"(?i)\bSources\s*:", text)) != 1 or re.search(r"(?i)\bSource\s*:", text):
             errors.append("expected exactly one Sources line")

@@ -2057,19 +2057,43 @@ def _ranking_score_numbers(evidence: dict | None) -> set[float]:
     return found
 
 
+def _normalize_apostrophes(text: str) -> str:
+    """Curly I’d and straight I'd are the same word."""
+    return (text or "").replace("\u2019", "'").replace("\u2018", "'").replace("\u02bc", "'")
+
+
+def _unescape_breaks(text: str) -> str:
+    """A model sometimes writes the two characters \\n instead of a line break."""
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+
+
+def _strip_model_closers(text: str) -> str:
+    """Drop Scores and Sources lines the model wrote. The skeleton supplies the one copy."""
+    cleaned = text
+    for _ in range(4):
+        previous = cleaned
+        cleaned = re.sub(r"(?is)\s*\bScores\s*:.*?(?=(?:\bSources\s*:)|(?:\bScores\s*:)|\Z)", "", cleaned)
+        cleaned = re.sub(r"(?is)\s*\bSources\s*:.*?(?=(?:\bScores\s*:)|(?:\bSources\s*:)|\Z)", "", cleaned)
+        if cleaned == previous:
+            break
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+
+
+def _append_skeleton_closers(text: str, skeleton: str) -> str:
+    cleaned = text.strip()
+    scores = re.search(r"(?is)\bScores\s*:.*?(?=\s+Sources:|$)", skeleton)
+    if scores:
+        cleaned = f"{cleaned.rstrip()} {scores.group(0).strip()}".strip()
+    sources = re.search(r"(?is)\bSources\s*:.*", skeleton)
+    if sources:
+        cleaned = f"{cleaned.rstrip()} {sources.group(0).strip()}".strip()
+    return cleaned
+
+
 def _prepare_draft(text: str, skeleton: str) -> str:
-    """Keep the skeleton's Scores and Sources lines. Do not cut numbers out of the reason."""
-    cleaned = (text or "").strip()
-    if "Scores:" not in skeleton and re.search(r"(?i)\bScores:", cleaned):
-        cleaned = re.sub(r"(?i)\s*Scores:.*?(?=(?:\s+Sources:)|\s*$)", "", cleaned, flags=re.S).strip()
-    if "Scores:" in skeleton and not re.search(r"(?i)\bScores:", cleaned):
-        scores = re.search(r"Scores:.*?(?=\s+Sources:|$)", skeleton, re.S)
-        if scores:
-            cleaned = f"{cleaned.rstrip()} {scores.group(0).strip()}".strip()
-    if not re.search(r"(?i)\bSources\s*:", cleaned):
-        match = re.search(r"Sources:.*", skeleton)
-        if match:
-            cleaned = f"{cleaned.rstrip()} {match.group(0).strip()}".strip()
+    """Keep one skeleton Scores line and one Sources line. Do not cut numbers out of the reason."""
+    cleaned = _unescape_breaks(_normalize_apostrophes((text or "").strip()))
+    cleaned = _append_skeleton_closers(_strip_model_closers(cleaned), skeleton)
     cleaned = _drop_legend_from_reason(cleaned, skeleton)
     return _own_investment_sentence(cleaned, skeleton)
 
@@ -2142,22 +2166,21 @@ def _drop_priority_clause(body: str) -> str:
     return body
 
 
+def _has_recommendation(body: str) -> bool:
+    return bool(re.search(r"\b(?:recommend\w*|prioriti[sz]\w*)\b", body or "", re.I))
+
+
 def _own_investment_sentence(text: str, skeleton: str) -> str:
     """Keep the recommendation only when this question asked where to invest or what to strengthen."""
-    match = re.search(r"Based on those risk drivers, I'd prioritize [^.]+\.", skeleton)
-    tail_match = re.search(r"(?i)\b(?:Scores|Sources)\s*:.*", text, flags=re.S)
-    body = text[: tail_match.start()] if tail_match else text
-    tail = tail_match.group(0).strip() if tail_match else ""
-    if not match:
-        body = _drop_priority_clause(body)
-        return f"{body} {tail}".strip()
-    sentence = match.group(0)
+    text = _normalize_apostrophes(text)
+    match = re.search(r"Based on those risk drivers, I'd prioritize [^.]+\.", _normalize_apostrophes(skeleton))
     tail_match = re.search(r"(?i)\b(?:Scores|Sources)\s*:.*", text, flags=re.S)
     body = text[: tail_match.start()] if tail_match else text
     tail = tail_match.group(0).strip() if tail_match else ""
     body = _drop_priority_clause(body)
-    if sentence not in body:
-        body = f"{body} {sentence}".strip()
+    # A draft that already says "I recommend prioritizing ..." keeps that one sentence.
+    if match and not _has_recommendation(body):
+        body = f"{body.rstrip()} {match.group(0)}".strip()
     return f"{body} {tail}".strip()
 
 

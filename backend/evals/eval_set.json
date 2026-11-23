@@ -820,7 +820,8 @@
       "answer_excludes": ["$", "cost", "million", "score of.", "score for"],
       "opening_has_no_digits": true,
       "no_fallback": true,
-      "one_sources_line": true
+      "one_sources_line": true,
+      "one_recommendation": true
     }
   }
 ]

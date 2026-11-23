@@ -1,5 +1,6 @@
 """Answer wording, one-decimal evidence, and stale snow-day cache."""
 
+import re
 from datetime import date
 
 import pytest
@@ -360,6 +361,46 @@ def test_compare_does_not_invent_a_priority(client):
     shown = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=draft), None, {})
     assert shown.fallback is False
     assert "I'd prioritize" not in shown.answer
+    assert "44.9" in shown.answer
+
+
+def test_a_draft_recommendation_is_not_repeated():
+    skeleton = (
+        "New York/Newark is the most vulnerable hub to weather disruption. "
+        "FEMA rates it a high historical hurricane-risk area. "
+        "Based on those risk drivers, I'd prioritize hurricane and flood protection and winter readiness. "
+        "Scores: New York/Newark 46.8 (higher = more exposed). "
+        "Sources: Open-Meteo 2025 weather, FEMA NRI, NWS alerts."
+    )
+    draft = (
+        "New York/Newark is the most vulnerable hub to weather disruption. "
+        "FEMA rates it a high historical hurricane-risk area. "
+        "I recommend prioritizing hurricane and flood protection and winter readiness. "
+        "Scores: New York/Newark 46.8 (higher = more exposed). "
+        "Sources: Open-Meteo 2025 weather, FEMA NRI, NWS alerts."
+    )
+    shown = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=draft), None, {})
+    assert shown.fallback is False
+    assert "I recommend prioritizing hurricane and flood protection and winter readiness." in shown.answer
+    assert "Based on those risk drivers, I'd prioritize" not in shown.answer
+    curly = draft.replace("I recommend prioritizing", "I\u2019d prioritize")
+    kept = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=curly), None, {})
+    assert kept.fallback is False
+    assert len(re.findall(r"(?i)\bprioriti[sz]\w*", kept.answer)) == 1
+
+
+def test_literal_newline_does_not_leave_a_second_scores_line():
+    skeleton = (
+        "Houston hub (South region) is more exposed to flood than Miami hub (South region). "
+        "Scores: hurricane Houston 80.0, Miami 80.0; flood Houston 44.9, Miami 40.2. "
+        "Sources: Open-Meteo 2025 weather, FEMA NRI, NWS alerts."
+    )
+    draft = skeleton + "\\nScores: hurricane Houston 80.0, Miami 80.0. Sources: Open-Meteo 2025 weather."
+    shown = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=draft), None, {})
+    assert shown.fallback is False
+    assert "\\n" not in shown.answer
+    assert shown.answer.lower().count("scores:") == 1
+    assert shown.answer.lower().count("sources:") == 1
     assert "44.9" in shown.answer
 
 
