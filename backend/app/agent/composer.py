@@ -180,12 +180,17 @@ def apply_model_prose(
     if drafted is None and failure_note:
         logger.warning("answer skeleton shown: %s", failure_note)
     if drafted is None:
-        if failure_note:
-            uncertainties.insert(0, "The language model did not return a valid briefing, so this wording comes from the scored evidence.")
-        else:
+        if not failure_note:
             assumptions.append("Wording is assembled directly from the scored evidence.")
         return _lock_breakdown(
-            base.model_copy(update={"assumptions": _unique(assumptions), "uncertainties": _unique(uncertainties)}),
+            base.model_copy(
+                update={
+                    "assumptions": _unique(assumptions),
+                    "uncertainties": _unique(uncertainties),
+                    "fallback": bool(failure_note),
+                    "rejection_reason": failure_note,
+                }
+            ),
             evidence,
         )
     answer = drafted.answer.strip()
@@ -271,12 +276,20 @@ def _tied_leaders(resolved: ResolvedIntent, reports: list[HubReport]) -> list[Hu
 
 
 def _plural_question(resolved: ResolvedIntent) -> bool:
-    """'Which hubs' and 'rank' name several hubs. 'Which hub' names one."""
+    """'Which hubs' and 'rank' name several hubs. 'Which hub' names one.
+
+    A trailing-365 follow-up keeps the previous ranking's plural shape.
+    """
     question = (resolved.question or "").lower()
-    if re.search(r"\bwhich hubs\b|\brank\b|\bhubs\b", question) and not re.search(r"\bwhich hub\b", question):
-        return True
-    if re.search(r"\bwhich hub\b|\briskiest hub\b|\bsafest hub\b|\bone hub\b", question):
+    prior = (resolved.prior_question or "").lower()
+    singular = r"\bwhich hub\b|\briskiest hub\b|\bsafest hub\b|\bone hub\b"
+    plural = r"\bwhich hubs\b|\brank\b|\bhubs\b"
+    if re.search(singular, question):
         return False
+    if re.search(plural, question) and not re.search(r"\bwhich hub\b", question):
+        return True
+    if resolved.inherited and re.search(plural, prior) and not re.search(r"\bwhich hub\b", prior):
+        return True
     return False
 
 
@@ -2013,11 +2026,31 @@ def _prepare_draft(text: str, skeleton: str) -> str:
     cleaned = (text or "").strip()
     if "Scores:" not in skeleton and re.search(r"(?i)\bScores:", cleaned):
         cleaned = re.sub(r"(?i)\s*Scores:.*?(?=(?:\s+Sources:)|\s*$)", "", cleaned, flags=re.S).strip()
+    if "Scores:" in skeleton and not re.search(r"(?i)\bScores:", cleaned):
+        scores = re.search(r"Scores:.*?(?=\s+Sources:|$)", skeleton, re.S)
+        if scores:
+            cleaned = f"{cleaned.rstrip()} {scores.group(0).strip()}".strip()
+    cleaned = _strip_scores_from_reason(cleaned, skeleton)
     if not re.search(r"(?i)\bSources\s*:", cleaned):
         match = re.search(r"Sources:.*", skeleton)
         if match:
             cleaned = f"{cleaned.rstrip()} {match.group(0).strip()}".strip()
     return cleaned
+
+
+def _strip_scores_from_reason(text: str, skeleton: str) -> str:
+    """Score numbers stay on the Scores line. Day counts in the reason stay."""
+    if not re.search(r"(?i)\bScores:", text):
+        return text
+    before, after = re.split(r"(?i)\bScores:", text, maxsplit=1)
+    clause = _scores_clause(skeleton) or ""
+    skeleton_before = _before_scores(skeleton)
+    score_only = {round(value, 1) for value in _fact_numbers(clause)} - {round(value, 1) for value in _fact_numbers(skeleton_before)}
+    kept = {round(value, 1) for value in _fact_numbers(after)}
+    for value in sorted(score_only & kept, reverse=True):
+        token = f"{value:.1f}"
+        before = re.sub(rf"(?:\s+at)?\s+{re.escape(token)}\b", "", before)
+    return f"{before.rstrip()} Scores:{after}"
 
 
 def _fact_numbers(text: str) -> list[float]:
@@ -2101,18 +2134,20 @@ def _draft_is_usable(text: str, evidence: dict | None, scores: list[ScoreItem], 
 
 def _draft_rejection(text: str, evidence: dict | None, scores: list[ScoreItem], skeleton: str = "") -> str | None:
     notice = str((evidence or {}).get("required_notice") or "")
-    label_problem = _internal_label_problem(text, skeleton, evidence)
-    if label_problem:
-        return label_problem
-    shape_problem = _answer_shape_problem(text, skeleton, evidence)
-    if shape_problem:
-        return shape_problem
     if notice and notice not in text:
         return "missing required window notice"
     if not notice and WINDOW_NOTICE in text:
         return "window notice was not asked for"
     if (evidence or {}).get("unsupported_window") and _UNSUPPORTED_WINDOW_WORD.search(text):
         return "attributes yearly values to an unsupported window"
+    if (skeleton or "").strip():
+        return _fact_problem(text, skeleton)
+    label_problem = _internal_label_problem(text, skeleton, evidence)
+    if label_problem:
+        return label_problem
+    shape_problem = _answer_shape_problem(text, skeleton, evidence)
+    if shape_problem:
+        return shape_problem
     phrase = str((evidence or {}).get("required_driver_phrase") or "")
     phrase_in_skeleton = bool(phrase) and not _missing_numbers(phrase, skeleton or "")
     if phrase and (not (skeleton or "").strip() or phrase_in_skeleton) and _missing_numbers(phrase, text):

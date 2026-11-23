@@ -67,6 +67,8 @@ class AnswerResult(BaseModel):
     uncertainties: list[str] = Field(default_factory=list)
     sources: list[SourceItem] = Field(default_factory=list)
     follow_up_questions: list[str] = Field(default_factory=list)
+    fallback: bool = False
+    rejection_reason: str | None = None
 
 
 class ChatRequest(BaseModel):

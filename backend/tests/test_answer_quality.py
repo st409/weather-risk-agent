@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agent.composer import WINDOW_NOTICE, _draft_is_usable, apply_model_prose
+from app.agent.composer import WINDOW_NOTICE, _draft_is_usable, _prepare_draft, apply_model_prose
 from app.agent.llm import ANSWER_SYSTEM
 from app.agent.schemas import AnswerDraft, AnswerResult, IntentResult
 from app.db.repository import get_daily_window, latest_score, save_daily_window, save_score_snapshot, seed_reference_data
@@ -93,6 +93,9 @@ def test_draft_keeps_scores_in_one_final_line_and_rejects_overclaims():
     assert _draft_is_usable(skeleton, {}, [], skeleton)
     woven = skeleton.replace("Dallas had 153", "Dallas at 81.2 had 153")
     assert _draft_is_usable(woven, {}, [], skeleton)
+    kept_scores = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=woven), None, {})
+    assert "81.2" not in kept_scores.answer.split("Scores:", 1)[0]
+    assert "81.2" in kept_scores.answer
     assert _draft_is_usable(skeleton.replace(" (higher = more exposed)", ""), {}, [], skeleton)
     assert not _draft_is_usable(
         "Dallas had 153 days reaching 95 F in 2025. Scores: (higher = more exposed).",
@@ -101,7 +104,9 @@ def test_draft_keeps_scores_in_one_final_line_and_rejects_overclaims():
         skeleton,
     )
     counted = "Denver hub (Mountain region) had 151 freezing days (41.4% of the year)."
-    assert not _draft_is_usable(counted + " Scores: (higher = more exposed).", {"rankings": [{"focus_score": 52.5}]}, [], counted)
+    stripped = _prepare_draft(counted + " Scores: (higher = more exposed).", counted)
+    assert "Scores:" not in stripped
+    assert _draft_is_usable(stripped, {"rankings": [{"focus_score": 52.5}]}, [], counted)
     assert not _draft_is_usable("Denver had a significant portion of the year.", {}, [], counted)
     assert not _draft_is_usable("Denver is the most exposed hub.", {}, [], counted)
 
@@ -134,7 +139,10 @@ def test_gap_draft_that_reverses_the_leader_is_rejected(client):
     flipped = base.answer.replace("Chicago trails Detroit", "Detroit trails Chicago")
     rejected = apply_model_prose(base, AnswerDraft(answer=flipped), None, body["evidence"])
     assert rejected.answer == base.answer
-    assert any("did not return a valid briefing" in item.lower() for item in rejected.uncertainties)
+    assert rejected.fallback is True
+    assert rejected.rejection_reason
+    visible = " ".join([rejected.answer, *rejected.uncertainties, *rejected.assumptions]).lower()
+    assert "did not return a valid briefing" not in visible
 
 
 def test_day_count_draft_accepts_a_degree_symbol():

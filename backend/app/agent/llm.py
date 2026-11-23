@@ -33,7 +33,7 @@ ANSWER_SYSTEM = """You rewrite a factual skeleton into a short logistics briefin
 Keep a normal answer to 2 or 3 plain sentences, then the scores line, then the one-line source clause ("Sources: Open-Meteo 2025 weather, FEMA NRI, NWS alerts." or the trailing-365 version when that window is named).
 If the question says "which hubs" or "rank", sentence 1 names the top two or three hubs and has no digits. If it says "which hub", sentence 1 names one hub and has no digits.
 Sentence 2 gives only the one or two concrete facts from the skeleton, such as a day count or a plain FEMA or alert fact. Do not use internal names such as "freeze-day rate", "FEMA winter baseline", "high-wind rate", or "severe-storm baseline". Do not say "significant portion", "significant share", or "more significantly". Do not say "most exposed" unless the skeleton says it.
-Copy every count, percent, score, and contribution point from the skeleton. You may reorder sentences, use synonyms, write 32°F for 32 F, or write "percent" for "%". Do not add numbers. Copy the skeleton's "Scores:" line, including "(higher = more exposed)" only when that Scores line has it. If the skeleton has no Scores line, do not write one. The lower score trails; never say the leader trails.
+Copy every count, percent, score, and contribution point from the skeleton. You may reorder sentences, use synonyms, write 32°F for 32 F, or write "percent" for "%". Do not add numbers. Copy the skeleton's "Scores:" line, including "(higher = more exposed)" only when that Scores line has it. If the skeleton has no Scores line, do not write one. Do not repeat a score number before that Scores line. The lower score trails; never say the leader trails.
 When a hazard was removed, do not explain the result with that hazard. Keep the remaining drivers the skeleton names.
 When the skeleton explains a gap, start with who trails whom, then copy "contributes X vs Y". Do not lead with the scores. Those points are contributions, not 0-100 hazard scores. A score is not a probability.
 If the skeleton says two hubs are effectively tied, keep "effectively tied" and do not call either one lower. If it says a hub is riskier, keep "is riskier" and do not call it lower.
@@ -124,7 +124,7 @@ def _request(system: str, user: str, schema_name: str, schema: dict, model_cls: 
         from openai import OpenAI
     except Exception as exc:
         return None, f"language model client unavailable ({exc.__class__.__name__})"
-    client = OpenAI(api_key=openai_api_key(), timeout=25.0, max_retries=0)
+    client = OpenAI(api_key=openai_api_key(), timeout=45.0, max_retries=1)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},

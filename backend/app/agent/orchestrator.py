@@ -121,6 +121,8 @@ def handle_chat(session_id: str | None, message: str) -> dict:
     for report in reports:
         repository.save_score_snapshot(public_report(report))
     payload = _payload(session_id, answer, resolved, evidence)
+    payload["fallback"] = bool(answer.fallback)
+    payload["rejection_reason"] = answer.rejection_reason
     repository.add_message(session_id, "assistant", answer.answer, payload)
     return payload
 

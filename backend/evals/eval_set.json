@@ -753,9 +753,12 @@
     "expect": {
       "intent": "rank_hubs",
       "rankings_count": 10,
-      "answer_contains": ["trailing 365", "Sources:"],
-      "answer_excludes": ["Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025"],
-      "one_sources_line": true
+      "answer_contains": ["trailing 365", "Sources:", "Scores:"],
+      "answer_excludes": ["Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025", "did not return a valid briefing"],
+      "one_sources_line": true,
+      "names_top_hubs": true,
+      "opening_has_no_digits": true,
+      "no_fallback": true
     }
   },
   {
