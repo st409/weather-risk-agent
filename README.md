@@ -34,6 +34,8 @@ python scripts/tasks.py dev
 | `WEATHER_DATA_MODE` | No | `live` (default) or `fixture` for tests. |
 | `NWS_USER_AGENT` | No | Required by the National Weather Service. A default is set. |
 | `DATABASE_PATH` | No | SQLite file. Default `backend/data/weather_risk.db`. |
+| `ALLOWED_ORIGINS` | No | Extra browser origins for CORS, comma-separated. Local dev is always allowed. |
+| `VITE_API_URL` | No | Frontend only. API origin in production. Empty in local dev, so Vite proxies `/api`. |
 
 Copy `.env.example` to `.env`. Do not commit `.env`.
 
@@ -75,4 +77,28 @@ make score-once
 - FEMA baselines are a county snapshot retrieved 2026-11-23. Large counties often score near 100 because the index includes expected loss.
 - Hurricane surge modifier is on only for Miami, Houston, and New York/Newark.
 - Wildfire is not a scored hazard.
-- No deployment and no score-history chart in this version.
+- No score-history chart in this version.
+
+## Deploy
+
+The page goes on Vercel. The API goes on Render. No custom domain is required. The free Render service sleeps after 15 minutes without a request, and the next request takes about a minute to wake it.
+
+### Render
+
+1. In Render, create a Blueprint from this repo, or a Python web service with root directory `backend`.
+2. Build command: `pip install -r requirements.txt`
+3. Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+4. Health check path: `/api/health`
+5. Set environment variables:
+   - `OPENAI_API_KEY`: your key, if you want the model to draft prose. Leave it empty and answers still come from the scores.
+   - `ALLOWED_ORIGINS`: the Vercel URL, for example `https://weather-risk-agent.vercel.app`. No trailing slash.
+
+`render.yaml` records the same service settings. The committed `backend/data/weather_risk.db` is what the free server starts with. Chat rows written after deploy can disappear when the free instance sleeps or restarts.
+
+### Vercel
+
+1. Import the GitHub repo. Set the root directory to `frontend`. Framework preset: Vite.
+2. Set `VITE_API_URL` to the Render URL, for example `https://weather-risk-api.onrender.com`. No trailing slash.
+3. Deploy. The site is served at a `*.vercel.app` address.
+
+Locally, leave `VITE_API_URL` unset. The dev server still proxies `/api` to `http://127.0.0.1:8000`.

@@ -26,6 +26,17 @@ def openai_api_key() -> str:
     return os.getenv("OPENAI_API_KEY", "").strip()
 
 
+def allowed_origins() -> list[str]:
+    """Local dev origins, plus any comma-separated ALLOWED_ORIGINS from the host."""
+    origins = ["http://127.0.0.1:5173", "http://localhost:5173"]
+    raw = os.getenv("ALLOWED_ORIGINS", "")
+    for part in raw.split(","):
+        origin = part.strip().rstrip("/")
+        if origin and origin not in origins:
+            origins.append(origin)
+    return origins
+
+
 def openai_model() -> str:
     return os.getenv("OPENAI_MODEL", "").strip() or "gpt-4o-mini"
 

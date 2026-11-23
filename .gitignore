@@ -1,4 +1,7 @@
 .env
+.env.*
+!.env.example
+venv/
 .venv/
 backend/.venv/
 __pycache__/
@@ -6,9 +9,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 *.db
+!backend/data/weather_risk.db
 *.db-wal
 *.db-shm
+node_modules/
 frontend/node_modules/
+dist/
 frontend/dist/
 backend/*.egg-info/
 .DS_Store

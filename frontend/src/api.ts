@@ -84,8 +84,13 @@ export type Health = {
   hub_count: number;
 };
 
+function apiUrl(path: string): string {
+  const base = (import.meta.env.VITE_API_URL ?? "").trim().replace(/\/$/, "");
+  return `${base}${path}`;
+}
+
 export async function getHealth(): Promise<Health> {
-  const response = await fetch("/api/health");
+  const response = await fetch(apiUrl("/api/health"));
   if (!response.ok) {
     throw new Error("Backend is not responding.");
   }
@@ -93,7 +98,7 @@ export async function getHealth(): Promise<Health> {
 }
 
 export async function sendMessage(message: string, sessionId?: string): Promise<ChatResponse> {
-  const response = await fetch("/api/chat", {
+  const response = await fetch(apiUrl("/api/chat"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, session_id: sessionId }),

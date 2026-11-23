@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.chat import router as chat_router
 from app.api.hubs import router as hubs_router
+from app.config import allowed_origins
 from app.db.repository import init_db, seed_reference_data
 from app.risk.engine import recompute_stale_scores
 
@@ -24,7 +25,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Weather Risk Agent", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_origins=allowed_origins(),
         allow_methods=["*"],
         allow_headers=["*"],
     )
