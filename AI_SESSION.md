@@ -51,4 +51,6 @@ Current answer rules, as enforced by the prompt and the validator:
 
 ## Full chats
 
-The exported chats are in [`docs/ai-session/`](docs/ai-session/).
+- [01-plan.md](docs/ai-session/01-plan.md): planning, scoping, initial build, evals and answer wording
+- [02-ui-deploy-iteration.md](docs/ai-session/02-ui-deploy-iteration.md): UI, voice, Render deploy, live QA iteration
+- [03-code-review.md](docs/ai-session/03-code-review.md): code review, then round 1 of fixes

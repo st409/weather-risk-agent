@@ -33,7 +33,7 @@ weather-risk-agent/
 │   └── evals/          eval_set.json and run_eval.py
 ├── frontend/src/       Vite + React chat UI, voice input and read-aloud
 ├── scripts/            setup, dev, test, eval, seed tasks
-├── docs/ai-session/    exported AI build chats
+├── docs/ai-session/    01-plan.md, 02-ui-deploy-iteration.md, 03-code-review.md
 ├── render.yaml         Render service settings for the API
 ├── README.md
 ├── DESIGN.md
