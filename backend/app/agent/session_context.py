@@ -10,7 +10,7 @@ import difflib
 import re
 from dataclasses import dataclass, field
 
-from app.risk.hubs import ALIASES, HUB_BY_ID, OUTSIDE_PLACES, REGIONS, hub_names
+from app.risk.hubs import ALIASES, HUB_BY_ID, HUBS, OUTSIDE_PLACES, REGIONS, hub_names
 
 HAZARDS = ("hurricane", "flood", "heat", "severe_storm", "winter")
 METRICS = {
@@ -31,12 +31,20 @@ _HAZARD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("winter", re.compile(r"\b(winter|snowfall|snow|freezing|freeze|blizzard|ice)\b|חורף|שלג", re.I)),
 )
 _REGION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("Midwest", re.compile(r"\b(midwestern|midwest)\b", re.I)),
-    ("Northeast", re.compile(r"\b(northeast|north\s+east)\b", re.I)),
-    ("Mountain", re.compile(r"\b(rocky mountains|rockies|mountain west|mountain region|mountain)\b", re.I)),
-    ("West", re.compile(r"\b(west coast|the west)\b", re.I)),
-    ("South", re.compile(r"\b(southeast|gulf coast|the south|south)\b", re.I)),
+    ("Midwest", re.compile(r"\b(?:midwestern|midwest)\b", re.I)),
+    ("Northeast", re.compile(r"\b(?:northeast|north\s+east)\b", re.I)),
+    ("Mountain", re.compile(r"\b(?:rocky mountains|rockies|mountain west|mountain region|mountain)\b", re.I)),
+    ("West", re.compile(r"\b(?:west coast|the west|west)\b", re.I)),
+    ("South", re.compile(r"\b(?:southeast|gulf coast|the south|southern|south)\b", re.I)),
 )
+_METRIC_HAZARD = {
+    "snowfall_day_pct": "winter",
+    "freeze_day_pct": "winter",
+    "heat_day_pct": "heat",
+    "extreme_heat_day_pct": "heat",
+    "heavy_rain_day_pct": "flood",
+    "very_heavy_rain_day_pct": "flood",
+}
 
 
 @dataclass
@@ -161,7 +169,12 @@ def parse_message(message: str) -> ParsedMessage:
     hub_ids = _mark_aliases(low, ALIASES, occupied)
     hub_ids.extend(_fuzzy_hubs(low, occupied, hub_ids))
     unknown = _first_outside(low, occupied)
-    region = _find_region(low)
+    regions = _find_regions(low)
+    region = regions[0] if len(regions) == 1 else None
+    if len(regions) > 1:
+        for hub in HUBS:
+            if hub.region in regions and hub.hub_id not in hub_ids:
+                hub_ids.append(hub.hub_id)
     excluded = _negated_hazards(low)
     hazards = [name for name, pattern in _HAZARD_PATTERNS if pattern.search(low) and name not in excluded]
     metric = _metric(low)
@@ -172,7 +185,7 @@ def parse_message(message: str) -> ParsedMessage:
     why = bool(re.search(r"\b(why|explain|drivers?|how come)\b", low))
     ordinal = _ordinal_index(low)
     asks_why_top = bool(why and not hub_ids and re.search(r"\b(top|first|highest|that one)\b", low))
-    metric_q = bool(re.search(r"\b(percent|percentage|how many(?:\s+\w+){0,3}\s+days|share of days)\b|%", low))
+    metric_q = _is_metric_question(low)
     compare = bool(re.search(r"\b(compare|comparison|versus|vs\.?|between)\b", low))
     rank = bool(re.search(r"\b(which|most|least|ranking|rank|highest|lowest|exposed|riskiest|safest|safer)\b", low))
     refers = _refers_back(low)
@@ -215,10 +228,10 @@ def parse_message(message: str) -> ParsedMessage:
         intent = "explain_hub"
     elif metric_q:
         intent = "metric_lookup"
+    elif len(regions) > 1 or rank or (region and not hub_ids) or excluded:
+        intent = "rank_hubs"
     elif compare or (len(hub_ids) >= 2 and not rank):
         intent = "compare_hubs"
-    elif rank or (region and not hub_ids) or excluded:
-        intent = "rank_hubs"
     elif detail and not hub_ids and not compare and not rank and not why and not metric_q:
         intent = "follow_up"
     elif followish and not hub_ids:
@@ -241,7 +254,7 @@ def parse_message(message: str) -> ParsedMessage:
         hazards=hazards,
         metric=metric if metric_q else None,
         time_window=window,
-        region_explicit=region is not None,
+        region_explicit=bool(regions),
         hazards_explicit=bool(hazards),
         asks_why_top=asks_why_top,
         asks_safer=asks_safer,
@@ -274,6 +287,8 @@ def resolve_intent(parsed: ParsedMessage, context: SessionContext | None) -> Res
 
     parsed = _preserve_intent_for_window(parsed, context)
     parsed = _maybe_inherit(parsed, context)
+    parsed = _fill_compare_partner(parsed, context)
+    parsed = _fill_why_lower(parsed, context)
     if parsed.intent in {"unknown", "follow_up"}:
         return _clarify(
             "I can rank these hubs, compare two of them, look up a weather percentage, or explain a score. What should I look up?",
@@ -433,8 +448,14 @@ def _maybe_inherit(parsed: ParsedMessage, context: SessionContext) -> ParsedMess
             hubs = [context.focus_hub_id] if context.focus_hub_id else list((context.hub_ids or context.last_result_hub_ids)[:1])
         intent = "explain_hub"
     elif intent == "metric_lookup":
-        if parsed.hazards_explicit and not parsed.metric:
+        if parsed.detail == "breakdown" or (parsed.hazards_explicit and not parsed.metric):
             intent = "explain_hub"
+            metric = None
+            if not parsed.hazards_explicit:
+                hazard = _METRIC_HAZARD.get(context.metric or "")
+                if hazard:
+                    hazards = [hazard]
+                    parsed.hazards_explicit = True
         else:
             intent = "metric_lookup"
         if not hubs:
@@ -457,8 +478,6 @@ def _slot_problem(parsed: ParsedMessage) -> str | None:
     if parsed.intent == "explain_hub" and len(parsed.hub_ids) > 1 and not parsed.explain_gap:
         parsed.intent = "compare_hubs"
         return None
-    if parsed.intent == "metric_lookup" and len(parsed.hub_ids) != 1:
-        return "Which hub should I calculate that for?"
     if parsed.intent == "metric_lookup" and parsed.metric not in METRICS:
         return "Which percentage should I calculate: snowfall days, freeze days, heat days, or heavy-rain days?"
     return None
@@ -597,6 +616,10 @@ def _unsupported_window(low: str) -> bool:
 
 
 def _detail_request(low: str) -> str | None:
+    if re.search(r"\b(fresh(?:ness)?|how recent|up to date|retrieved)\b", low) and re.search(
+        r"\b(data|weather|fema|sources?)\b", low
+    ):
+        return "methodology"
     if re.search(r"\b(sources?|citations?)\b|מקורות", low):
         return "sources"
     if re.search(r"\b(assumptions?|limitations?|definitions?)\b|הנחות", low):
@@ -635,13 +658,75 @@ def _first_outside(low: str, occupied: list[bool]) -> str | None:
     return None if best is None else best[1]
 
 
-def _find_region(low: str) -> str | None:
-    best: tuple[int, str] | None = None
+def _find_regions(low: str) -> list[str]:
+    """Every region named in the message. Longer phrases win, so 'mountain west' stays Mountain."""
+    spans: list[tuple[int, int, str]] = []
     for name, pattern in _REGION_PATTERNS:
-        match = pattern.search(low)
-        if match and (best is None or match.start() < best[0]):
-            best = (match.start(), name)
-    return None if best is None else best[1]
+        for match in pattern.finditer(low):
+            spans.append((match.start(), match.end(), name))
+    spans.sort(key=lambda item: (item[1] - item[0], -item[0]), reverse=True)
+    occupied = [False] * len(low)
+    chosen: list[tuple[int, str]] = []
+    for start, end, name in spans:
+        if any(occupied[start:end]):
+            continue
+        for index in range(start, end):
+            occupied[index] = True
+        chosen.append((start, name))
+    chosen.sort()
+    regions: list[str] = []
+    for _start, name in chosen:
+        if name not in regions:
+            regions.append(name)
+    return regions
+
+
+def _is_metric_question(low: str) -> bool:
+    """Day counts stay on the metric, including 'most freeze days' and 'more snow days'."""
+    if re.search(r"\b(percent|percentage|how many(?:\s+\w+){0,3}\s+days|share of days)\b|%", low):
+        return True
+    if re.search(r"\b(?:snow|snowfall|freeze|freezing)\s+days\b", low):
+        return True
+    return False
+
+
+def _fill_compare_partner(parsed: ParsedMessage, context: SessionContext) -> ParsedMessage:
+    """One named hub plus a previous ranking compares that hub with the current leader."""
+    if parsed.intent != "compare_hubs" or len(parsed.hub_ids) != 1:
+        return parsed
+    ordered = list(context.last_result_hub_ids or context.hub_ids)
+    if not ordered:
+        return parsed
+    named = parsed.hub_ids[0]
+    partner = ordered[1] if named == ordered[0] and len(ordered) > 1 else ordered[0]
+    if partner == named:
+        return parsed
+    parsed.hub_ids = [partner, named]
+    parsed.inherited = True
+    if not parsed.hazards_explicit and context.hazards:
+        parsed.hazards = list(context.hazards)
+        parsed.hazards_explicit = True
+    return parsed
+
+
+def _fill_why_lower(parsed: ParsedMessage, context: SessionContext) -> ParsedMessage:
+    """'Why is Atlanta lower?' keeps the leader and explains the gap, not Atlanta alone."""
+    if parsed.explain_gap or not _asks_why_lower(parsed.text) or len(parsed.hub_ids) != 1:
+        return parsed
+    ordered = list(context.last_result_hub_ids or context.hub_ids)
+    if not ordered:
+        return parsed
+    subject = parsed.hub_ids[0]
+    leader = ordered[0]
+    if subject == leader:
+        return parsed
+    parsed.intent = "explain_hub"
+    parsed.explain_gap = True
+    parsed.hub_ids = [leader, subject]
+    parsed.inherited = True
+    if not parsed.hazards_explicit:
+        parsed.hazards = list(context.hazards)
+    return parsed
 
 
 def _metric(low: str) -> str | None:

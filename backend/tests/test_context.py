@@ -253,3 +253,72 @@ def test_hebrew_message_does_not_rank():
     assert resolved.intent == "unsupported_language"
     assert resolved.hub_ids == []
     assert resolved.needs_clarification is False
+
+
+def test_southern_is_the_south_and_multi_region_is_a_union():
+    southern = _resolve("Rank the Southern hubs by severe storm")
+    assert southern.intent == "rank_hubs"
+    assert southern.region == "South"
+    assert southern.hazards == ["severe_storm"]
+    assert southern.hub_ids == []
+    west = _resolve("Rank the West and Mountain hubs by overall risk")
+    assert west.intent == "rank_hubs"
+    assert set(west.hub_ids) == {"denver", "losangeles"}
+    flood = _resolve("Rank the Northeast and South hubs by flood risk")
+    assert flood.intent == "rank_hubs"
+    assert set(flood.hub_ids) == {"newyork", "dallas", "houston", "miami", "atlanta"}
+
+
+def test_day_counts_stay_on_the_metric():
+    freeze = _resolve("Which hub has the most freeze days?")
+    assert freeze.intent == "metric_lookup"
+    assert freeze.metric == "freeze_day_pct"
+    assert freeze.needs_clarification is False
+    snow = _resolve("Does Chicago or Minneapolis have more snow days in 2025?")
+    assert snow.intent == "metric_lookup"
+    assert snow.metric == "snowfall_day_pct"
+    assert set(snow.hub_ids) == {"chicago", "minneapolis"}
+    assert snow.needs_clarification is False
+
+
+def test_follow_up_keeps_the_ranking_leader():
+    context = SessionContext(
+        hazards=["heat"],
+        last_intent="rank_hubs",
+        last_result_hub_ids=["dallas", "miami", "atlanta"],
+    )
+    compared = _resolve("How does Atlanta compare on heat?", context)
+    assert compared.intent == "compare_hubs"
+    assert compared.hub_ids == ["dallas", "atlanta"]
+    assert compared.hazards == ["heat"]
+    assert compared.needs_clarification is False
+    lower = _resolve("Why is Atlanta lower?", context)
+    assert lower.explain_gap is True
+    assert lower.hub_ids == ["dallas", "atlanta"]
+    assert lower.hazards == ["heat"]
+
+
+def test_harden_and_freshness_are_answered():
+    harden = _resolve("If we could only harden one hub this winter, which one should we pick?")
+    assert harden.intent == "rank_hubs"
+    assert harden.hazards == ["winter"]
+    assert harden.needs_clarification is False
+    fresh = _resolve("How fresh is the weather and FEMA data behind these scores?")
+    assert fresh.intent == "methodology"
+    assert fresh.needs_clarification is False
+
+
+def test_breakdown_after_a_metric_explains_the_hazard():
+    context = SessionContext(
+        hub_ids=["denver"],
+        focus_hub_id="denver",
+        metric="snowfall_day_pct",
+        last_intent="metric_lookup",
+        last_result_hub_ids=["denver"],
+    )
+    resolved = _resolve("Show the full breakdown", context)
+    assert resolved.intent == "explain_hub"
+    assert resolved.hub_ids == ["denver"]
+    assert resolved.detail == "breakdown"
+    assert resolved.hazards == ["winter"]
+    assert resolved.metric is None

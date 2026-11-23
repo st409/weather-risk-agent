@@ -277,10 +277,20 @@ def _explain_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> Answe
 
 
 def _metric_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> AnswerResult:
-    report = reports[0]
-    payload = metric_payload(report, resolved.metric or "")
-    if payload is None or payload["value"] is None:
+    packed = []
+    for report in reports:
+        payload = metric_payload(report, resolved.metric or "")
+        if payload is not None and payload["value"] is not None:
+            packed.append((report, payload))
+    if not packed:
         return clarification_answer("I couldn't compute that percentage from the days on hand. Try snowfall, freeze, heat, or heavy rain.")
+    packed.sort(key=lambda item: (item[1]["numerator"] if item[1]["numerator"] is not None else -1, item[1]["value"]), reverse=True)
+    if len(packed) == 1:
+        return _one_metric_answer(resolved, packed[0][0], packed[0][1])
+    return _metric_group_answer(resolved, packed)
+
+
+def _one_metric_answer(resolved: ResolvedIntent, report: HubReport, payload: dict) -> AnswerResult:
     value = payload["value"]
     noun = "snow days" if resolved.metric == "snowfall_day_pct" else payload["label"].lower()
     threshold = _metric_threshold(resolved.metric or "")
@@ -296,17 +306,50 @@ def _metric_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> Answer
         f"{payload['numerator']} days met the threshold out of {payload['denominator']} valid days.",
         f"Window: {report.window_label}.",
     ]
-    scores = [
-        ScoreItem(
-            hub_id=report.hub_id,
-            hub_name=report.name,
-            hazard=payload["name"],
-            score=_one_decimal(value),
-            unit="percent",
-        )
-    ]
+    scores = [_metric_score(report, payload)]
     answer = _base(resolved, [report], text, findings, _followups_for(resolved, [report]))
     return answer.model_copy(update={"scores": scores})
+
+
+def _metric_group_answer(resolved: ResolvedIntent, packed: list[tuple[HubReport, dict]]) -> AnswerResult:
+    """Compare or rank the day count itself. Do not substitute the winter index."""
+    seen: set[str] = set()
+    threshold = _metric_threshold(resolved.metric or "")
+    source = "Open-Meteo archive"
+    if any(report.weather_fallback for report, _payload in packed):
+        source = "offline stand-in for the Open-Meteo archive"
+    leader, lead = packed[0]
+
+    def _count(report: HubReport, payload: dict) -> str:
+        return f"{_mention(report, seen)} ({payload['numerator']} days, {payload['value']:.1f}%)"
+
+    if len(packed) == 2:
+        other, second = packed[1]
+        direct = f"{_count(leader, lead)} over {_count(other, second)}."
+    else:
+        noun = "freeze days" if resolved.metric == "freeze_day_pct" else "snow days" if resolved.metric == "snowfall_day_pct" else lead["label"].lower()
+        direct = (
+            f"{_mention(leader, seen)} has the most {noun}: {lead['numerator']} of {lead['denominator']}, {lead['value']:.1f}%."
+        )
+        if len(packed) > 1:
+            other, second = packed[1]
+            direct += f" Next is {_mention(other, seen)} at {second['numerator']} of {second['denominator']}, {second['value']:.1f}%."
+    direct = f"{direct} {threshold} Source: {source}."
+    reports = [report for report, _payload in packed]
+    text = _finish_text(resolved, reports, [direct])
+    findings = [f"{payload['hub_name']}: {payload['numerator']} days, {payload['value']:.1f}%" for _report, payload in packed[:5]]
+    answer = _base(resolved, reports[:5], text, findings, _followups_for(resolved, reports[:3]))
+    return answer.model_copy(update={"scores": [_metric_score(report, payload) for report, payload in packed]})
+
+
+def _metric_score(report: HubReport, payload: dict) -> ScoreItem:
+    return ScoreItem(
+        hub_id=report.hub_id,
+        hub_name=report.name,
+        hazard=payload["name"],
+        score=_one_decimal(payload["value"]),
+        unit="percent",
+    )
 
 
 def _pack(resolved: ResolvedIntent, reports: list[HubReport], text: str, findings: list[str], followups: list[str]) -> AnswerResult:
@@ -913,6 +956,7 @@ def canned_answer(resolved: ResolvedIntent) -> AnswerResult:
         "Fixed overall weights are winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, and heat 0.10. "
         "A missing input is dropped and the remaining weights are renormalized. A snow day is daily snowfall >= 1 cm. "
         "The score is a 0-100 index, not a probability. "
+        "Weather and FEMA inputs were retrieved 2026-11-23. "
         "Uncertainty: weather days are a single year, NWS shows only alerts active now, and FEMA is a static county snapshot. "
         "Sources: Open-Meteo archive, NWS active alerts, and the FEMA National Risk Index snapshot."
     )
@@ -1079,6 +1123,9 @@ def _separator_sentence(left: HubReport, right: HubReport, hazard: str) -> str:
 def _hub_line(leader: HubReport, other: HubReport, hazards: list[str], seen: set[str], resolved: ResolvedIntent) -> str:
     score = _n(_rank_score(resolved, other))
     name = _mention(other, seen)
+    lead_score = _n(_rank_score(resolved, leader))
+    if score == lead_score:
+        return f"{name} is effectively tied with {_mention(leader, seen)} at {score}."
     driver = _driver_words(other, hazards or ["overall"], resolved.excluded_hazards, limit=2)
     if resolved.safety_framing:
         lead = _mention(leader, seen)
@@ -1200,11 +1247,11 @@ def _subject_report(resolved: ResolvedIntent, ordered: list[HubReport]) -> HubRe
 
 
 def _required_driver_phrase(resolved: ResolvedIntent, report: HubReport) -> str:
-    if resolved.intent != "explain_hub":
+    if resolved.intent != "explain_hub" or resolved.explain_gap:
         return ""
-    if not resolved.explain_gap and not re.search(r"\bwhy\b", resolved.question or "", re.I):
+    if not re.search(r"\bwhy\b", resolved.question or "", re.I):
         return ""
-    total = _rank_score(resolved, report) if resolved.explain_gap else report.focus_score(resolved.hazards)
+    total = report.focus_score(resolved.hazards)
     return _driver_point_phrase(report, resolved.hazards or ["overall"], total, resolved.excluded_hazards)
 
 
@@ -1235,13 +1282,20 @@ def _gap_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> AnswerRes
 def _gap_sentence(leader: HubReport, other: HubReport, hazards: list[str], seen: set[str], resolved: ResolvedIntent) -> str:
     name = _mention(other, seen)
     lead = _mention(leader, seen)
-    score = _n(_rank_score(resolved, other))
-    lead_score = _n(_rank_score(resolved, leader))
-    phrase = _driver_point_phrase(other, hazards or ["overall"], _rank_score(resolved, other), resolved.excluded_hazards)
-    base = f"{name} is lower at {score} than {lead} at {lead_score}"
-    if phrase:
-        return f"{base}, {phrase}."
-    return f"{base}."
+    other_value = _rank_score(resolved, other)
+    lead_value = _rank_score(resolved, leader)
+    score = _n(other_value)
+    lead_score = _n(lead_value)
+    if score == lead_score:
+        return f"{name} is effectively tied with {lead} at {score}."
+    gap = _main_gap(leader, other, hazards, resolved)
+    if gap is None:
+        return f"{name} is lower at {score} than {lead} at {lead_score}."
+    label, left_points, right_points = gap
+    return (
+        f"{name} is lower at {score} than {lead} at {lead_score} "
+        f"mainly because its {label} contributes {right_points:.1f} vs {left_points:.1f}."
+    )
 
 
 def _main_gap(leader: HubReport, other: HubReport, hazards: list[str], resolved: ResolvedIntent) -> tuple[str, float, float] | None:

@@ -443,9 +443,8 @@
     "expect": {
       "intent": "explain_hub",
       "hub_count": 2,
-      "answer_contains": ["is lower at", "than", "Minneapolis", "Detroit"],
-      "answer_regex": "mainly .+ \\(\\d+\\.\\d+\\) and .+ \\(\\d+\\.\\d+\\) of \\d+\\.\\d+",
-      "mainly_clause_is_contributions": true
+      "answer_contains": ["is lower at", "than", "mainly because", "contributes", "vs", "Minneapolis", "Detroit"],
+      "answer_excludes": ["mainly freeze-day rate (", "mainly snow-day rate ("]
     }
   },
   {
@@ -501,6 +500,122 @@
       "hub_ids": ["dallas"],
       "answer_contains": ["trailing 365"],
       "answer_excludes": ["Only calendar year 2025 and trailing 365 days are supported, so this is for calendar year 2025"]
+    }
+  },
+  {
+    "id": "southern_severe_storm_stays_south",
+    "turns": ["Rank the Southern hubs by severe storm"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 4,
+      "answer_contains": ["Dallas hub (South region)", "58.3", "Houston", "53.8", "Atlanta", "53.6"],
+      "answer_excludes": ["Chicago"]
+    }
+  },
+  {
+    "id": "west_and_mountain_overall",
+    "turns": ["Rank the West and Mountain hubs by overall risk"],
+    "expect": {
+      "intent": "rank_hubs",
+      "hub_ids": ["denver", "losangeles"],
+      "rankings_count": 2,
+      "answer_contains": ["Denver", "36.1", "Los Angeles", "26.8"],
+      "answer_regex": "Denver hub[\\s\\S]{0,120}Los Angeles"
+    }
+  },
+  {
+    "id": "northeast_and_south_flood",
+    "turns": ["Rank the Northeast and South hubs by flood risk"],
+    "expect": {
+      "intent": "rank_hubs",
+      "rankings_count": 5,
+      "answer_contains": ["Houston hub (South region)", "62.4"],
+      "answer_regex": "Houston hub \\(South region\\) is the most exposed to flood, at 62\\.4",
+      "answer_excludes": ["Chicago", "Minneapolis", "Los Angeles"]
+    }
+  },
+  {
+    "id": "chicago_or_minneapolis_snow_days",
+    "turns": ["Does Chicago or Minneapolis have more snow days in 2025?"],
+    "expect": {
+      "intent": "metric_lookup",
+      "answer_contains": ["Minneapolis", "76 days, 20.8%", "over", "Chicago", "39 days, 10.7%"],
+      "answer_excludes": ["40.8", "36.7", "winter score"]
+    }
+  },
+  {
+    "id": "most_freeze_days",
+    "turns": ["Which hub has the most freeze days?"],
+    "expect": {
+      "intent": "metric_lookup",
+      "answer_contains": ["Minneapolis", "212 of 365", "58.1%"],
+      "answer_excludes": ["40.8", "winter score"]
+    }
+  },
+  {
+    "id": "atlanta_compares_with_heat_leader",
+    "turns": [
+      "Which hubs are most exposed to heat?",
+      "How does Atlanta compare on heat?"
+    ],
+    "expect": {
+      "intent": "compare_hubs",
+      "hub_ids": ["dallas", "atlanta"],
+      "answer_contains": ["Dallas", "Atlanta", "heat"],
+      "answer_excludes": ["Which two hubs should I compare"]
+    }
+  },
+  {
+    "id": "why_atlanta_lower_uses_the_gap",
+    "turns": [
+      "Which hubs are most exposed to heat?",
+      "Why is Atlanta lower?"
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_count": 2,
+      "answer_contains": ["Atlanta", "Dallas", "mainly because", "contributes", "vs"],
+      "answer_excludes": ["Which hub should I explain"]
+    }
+  },
+  {
+    "id": "harden_one_hub_this_winter",
+    "turns": ["If we could only harden one hub this winter, which one should we pick?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "answer_contains": ["Minneapolis", "72.3", "winter", "freeze-day rate"],
+      "answer_excludes": ["What should I look up"]
+    }
+  },
+  {
+    "id": "freshness_uses_methodology",
+    "turns": ["How fresh is the weather and FEMA data behind these scores?"],
+    "expect": {
+      "intent": "methodology",
+      "answer_contains": ["calendar year 2025", "trailing 365", "retrieved 2026-11-23"],
+      "answer_excludes": ["What should I look up"]
+    }
+  },
+  {
+    "id": "hurricane_tie_is_not_lower",
+    "turns": ["Which hubs are most exposed to hurricanes?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "answer_contains": ["effectively tied", "80.0"],
+      "answer_regex": "effectively tied with .+ at 80\\.0"
+    }
+  },
+  {
+    "id": "breakdown_after_snow_metric",
+    "turns": [
+      "What percentage of days in Denver last year had snowfall?",
+      "Show the full breakdown"
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["denver"],
+      "answer_contains": ["Contributors, largest first", "freeze", "snow"],
+      "answer_excludes": ["had"]
     }
   }
 ]
