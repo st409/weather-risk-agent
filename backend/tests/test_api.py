@@ -85,7 +85,11 @@ def test_demo_conversation(client):
 
     phoenix = _chat(client, "How exposed is Phoenix to heat?")
     assert phoenix["intent"]["needs_clarification"] is True
-    assert "Phoenix" in phoenix["answer"]["answer"]
+    assert phoenix["answer"]["answer"] == (
+        "I don't cover Phoenix. This assistant scores 10 regional hubs: "
+        "Chicago, Minneapolis, Detroit, Denver, Dallas, Houston, Miami, Atlanta, New York/Newark, and Los Angeles."
+    )
+    assert "demo" not in phoenix["answer"]["answer"].lower()
 
     safer = _chat(client, "Which hub is safest?")
     assert safer["intent"]["needs_clarification"] is False

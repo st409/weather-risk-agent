@@ -105,7 +105,8 @@
     "turns": ["How exposed is Phoenix to heat?"],
     "expect": {
       "needs_clarification": true,
-      "answer_contains": ["Phoenix"]
+      "answer_contains": ["Phoenix", "This assistant scores 10 regional hubs"],
+      "answer_excludes": ["demo"]
     }
   },
   {

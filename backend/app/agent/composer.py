@@ -68,7 +68,7 @@ def clarification_answer(question: str) -> AnswerResult:
         key_findings=[],
         scores=[],
         assumptions=[
-            "This demo only scores ten fixed logistics hubs, so a place or comparison outside that set gets one clarifying question instead of a guess."
+            "This assistant only scores ten fixed logistics hubs, so a place or comparison outside that set gets one clarifying question instead of a guess."
         ],
         uncertainties=[],
         sources=[
@@ -76,7 +76,7 @@ def clarification_answer(question: str) -> AnswerResult:
                 name="Fixed hub list",
                 source_type="static_public_dataset",
                 retrieved_at="2026-11-23",
-                uncertainty_note="Hub names, coordinates, and regions are maintained in code for this demo.",
+                uncertainty_note="Hub names, coordinates, and regions are maintained in code.",
             )
         ],
         follow_up_questions=[
@@ -1358,7 +1358,7 @@ def canned_answer(resolved: ResolvedIntent) -> AnswerResult:
     return AnswerResult(
         answer=text,
         assumptions=[
-            "The demo answers in English only.",
+            "Answers are in English only.",
             "Supported windows are calendar year 2025 and a trailing 365 days.",
             "Overall weights are fixed: winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, heat 0.10.",
         ],

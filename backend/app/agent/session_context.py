@@ -10,7 +10,7 @@ import difflib
 import re
 from dataclasses import dataclass, field
 
-from app.risk.hubs import ALIASES, HUB_BY_ID, HUBS, OUTSIDE_PLACES, REGIONS, hub_names
+from app.risk.hubs import ALIASES, HUB_BY_ID, HUBS, OUTSIDE_PLACES, REGIONS
 
 HAZARDS = ("hurricane", "flood", "heat", "severe_storm", "winter")
 METRICS = {
@@ -300,7 +300,7 @@ def resolve_intent(parsed: ParsedMessage, context: SessionContext | None) -> Res
         )
     if parsed.unknown_place:
         return _clarify(
-            f"I don't cover {parsed.unknown_place}. This demo only scores {hub_names()}.",
+            f"I don't cover {parsed.unknown_place}. This assistant scores 10 regional hubs: Chicago, Minneapolis, Detroit, Denver, Dallas, Houston, Miami, Atlanta, New York/Newark, and Los Angeles.",
             parsed,
         )
     if parsed.intent == "follow_up" and _bare_yes(parsed.text) and context.offered_breakdown:

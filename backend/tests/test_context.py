@@ -68,7 +68,11 @@ def test_why_top_uses_previous_order():
 def test_unknown_hub_asks_instead_of_guessing():
     resolved = _resolve("How exposed is Phoenix to heat?")
     assert resolved.needs_clarification is True
-    assert "Phoenix" in (resolved.clarifying_question or "")
+    assert resolved.clarifying_question == (
+        "I don't cover Phoenix. This assistant scores 10 regional hubs: "
+        "Chicago, Minneapolis, Detroit, Denver, Dallas, Houston, Miami, Atlanta, New York/Newark, and Los Angeles."
+    )
+    assert "demo" not in (resolved.clarifying_question or "").lower()
 
 
 def test_safer_without_context_ranks_every_hub():
