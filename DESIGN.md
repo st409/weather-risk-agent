@@ -16,7 +16,7 @@ flowchart TD
   ApiChat --> ChatUI
 ```
 
-The model does not rank hubs. Python fetches data, scores it, and checks JSON schema. If the model is missing or fails schema validation twice, the deterministic briefing is returned and the scores still come from Python.
+The model does not rank hubs. Python fetches data, scores it, and checks JSON schema. If the model is missing, fails schema validation twice, or the draft fails the answer check, the deterministic briefing is returned and the scores still come from Python.
 
 ## Repository structure
 
@@ -55,7 +55,7 @@ weather-risk-agent/
 | `backend/app/risk/weather.py` | Open-Meteo archive and NWS active alerts |
 | `backend/app/risk/hazards.py` | FEMA county snapshot |
 | `backend/app/risk/hubs.py` | The ten hubs |
-| `frontend/` | Chat. Scores, drivers, assumptions, sources, and follow-ups render inside the answer message. |
+| `frontend/` | Chat. The answer text includes the scores line and a sources sentence. Drivers, assumptions, and the source list render only when the question asks for a breakdown, the methodology, or sources. Follow-up questions are returned by the API and are not shown as buttons. |
 
 Direct score routes exist so the system is not only a chatbot.
 
@@ -65,11 +65,11 @@ Historical daily weather is the Open-Meteo archive (`temperature_2m_max`, `tempe
 
 Current alerts are the National Weather Service active alerts for the hub point. Severity weights, which the brief did not specify, are Extreme 3, Severe 2, Moderate 1, Minor 0.5, Unknown 0.25.
 
-FEMA National Risk Index hazard-type scores for the hub counties were queried on 2026-11-23 from the public counties feature service and stored in `backend/data/fema_nri_snapshot.csv`. They are already on a 0–100 scale. A null hurricane or coastal-flood score is stored blank and treated as 0. The flood baseline is the greater of inland and coastal. The severe-storm baseline is the average of tornado, lightning, hail, and strong wind.
+FEMA National Risk Index hazard-type scores for the hub counties were queried on 2026-11-23 from the public counties feature service and stored in `backend/data/fema_nri_snapshot.csv`. They are already on a 0–100 scale. A null hurricane score is stored blank and scored as 0, and that 0 keeps the 0.70 baseline weight. It is not dropped and rescaled, so an unpublished cell (Denver, Minneapolis) and a published 0 (Los Angeles) use the same baseline number. That note is included when the question is about hurricane. On another question it is left out of the answer. A null coastal-flood score is stored blank and does not zero the flood baseline, because that baseline is the greater of inland and coastal. The severe-storm baseline is the average of tornado, lightning, hail, and strong wind.
 
-The default window is the previous complete calendar year. "Last year" uses that window. Alerts are current, not historical.
+The default window is the previous complete calendar year. "Last year" uses that window. Alerts are current, not historical. Each hazard score mixes that historical window with the current alert term (winter 0.10, flood 0.15, hurricane 0.20, heat 0.15, severe storm 0.30). The number is a blend of historical exposure and current operational risk, not a pure historical index.
 
-Every answer carries `source`, `source_type` (`live_api`, `cached_api`, or `static_public_dataset`), `retrieved_at`, and a short uncertainty note. If a live call fails, an offline climatology stand-in is used and labeled as such. Tests set `WEATHER_DATA_MODE=fixture` so they do not need the network.
+Every answer carries `source`, `source_type` (`live_api`, `cached_api`, or `static_public_dataset`), `retrieved_at`, and a short uncertainty note. If Open-Meteo cannot be reached, that hub is left out of the result and no stand-in number is used. If NWS cannot be reached, the alert term is dropped and the remaining weights are rescaled. A successful call with no active alert stays a real zero. Tests set `WEATHER_DATA_MODE=fixture` so they do not need the network.
 
 ## Storage
 
@@ -121,7 +121,7 @@ hurricane_score =
   0.10 * coastal_modifier
 ```
 
-`coastal_modifier` is 100 for Miami, Houston, and New York/Newark, otherwise 0. Los Angeles coastal flood stays in the flood baseline. It is not treated as tropical surge.
+`coastal_modifier` is a fixed surge-exposure flag, not a FEMA score and not a distance to the coast. It is 100 for Miami, Houston, and New York/Newark, the hubs treated as exposed to tropical-cyclone surge, and 0 otherwise. Los Angeles is coastal, but its coastal flood stays in the flood baseline and is not treated as tropical surge.
 
 Heat:
 
@@ -166,9 +166,9 @@ Business-importance weights are stored as 1.0 and are not applied.
 Two schema-checked calls when a key is present:
 
 1. Intent JSON: `rank_hubs`, `compare_hubs`, `metric_lookup`, `explain_hub`, `follow_up`, `alerts`, `methodology`, `greeting`, `off_topic`, `unsupported_language`, or `unknown`, plus hubs, region, hazards, metric, window, and a clarification flag. Greeting, off-topic, methodology, and non-English turns are answered in code and do not call the model.
-2. Answer JSON: prose, findings, assumptions, uncertainties, sources, and follow-ups.
+2. Answer JSON: `answer` and `follow_up_questions` only. Findings, scores, assumptions, uncertainties, and sources stay on the Python result.
 
-Python overwrites `scores` and `sources` after the second call. Explicit hubs and hazards found in the text stay authoritative. One schema retry, then the deterministic answer.
+The model schema has no score or source field. Python keeps the scores and sources it computed. Explicit hubs and hazards found in the text stay authoritative. One schema retry, then the deterministic answer. A draft that passes the schema can still be rejected by the answer check and replaced by the skeleton.
 
 Answer pipeline: deterministic scores, then the composer builds a wording skeleton from them, then the model (if a key is set) rephrases the skeleton, then a validator checks the draft against the evidence and the answer rules. A rejected draft is replaced by the skeleton, so the user always gets a score-backed answer.
 
@@ -182,17 +182,12 @@ Answer pipeline: deterministic scores, then the composer builds a wording skelet
 
 Answers are English only. A message in another language gets one English redirect and no ranking.
 
-Supported time windows are the previous calendar year and the last 365 days. A single month or a custom range is not scored. The reply names the two supported windows, then answers for the window that was resolved. A trailing-365 answer says "in the last 365 days". The previous intent is kept, so a snow-day question stays a snow-day question.
+Supported time windows are the previous calendar year, the last 365 days, and the most recent finished winter (December through February). A single month, a quarter, or a custom range is not scored. The reply names calendar year and the last 365 days, then answers for the previous calendar year. "Last winter" is scored on its own. A trailing-365 answer says "in the last 365 days". The previous intent is kept, so a snow-day question stays a snow-day question.
 
-Overall weights are fixed: winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, heat 0.10. These weights are an assumption. In a real system they would be calibrated against the company's downtime days and costs. Asking to ignore a hazard drops that weight and renormalizes the rest. Business-importance weights stay at 1.0 and are not applied.
+Overall weights are fixed: winter 0.30, flood 0.25, hurricane 0.20, severe storm 0.15, heat 0.10. These weights are an assumption. In a real system they would be calibrated against the company's downtime days and costs. Asking to ignore a hazard drops that weight and renormalizes the rest. Business-importance weights stay at 1.0 and are not applied. The ranking is weather exposure only, not an investment priority. A later ranking would also need shipment volume and the cost of downtime.
 
 ## Scope left out
 
 Fixed hubs and five hazards only. No wildfire score, no freight weighting, and no score-history chart. Deployment is on Render (API and chat UI). FEMA scores for these urban counties are often saturated; the daily rates are what separate them, and the answers say so.
 
 Bonus: optional voice input (mic) and read-aloud, using the browser Web Speech API in the frontend. Nothing on the backend depends on it.
-
-## Next steps
-
-- Scheduled alert when a hub's score changes between snapshots.
-- Score-history chart from the stored score snapshots.
