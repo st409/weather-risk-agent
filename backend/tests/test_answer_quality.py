@@ -84,6 +84,28 @@ def test_draft_accepts_short_answers_and_checks_numbers():
     assert not _draft_is_usable(f"{WINDOW_NOTICE} Denver is highest at 44.8.", {"rankings": [{"focus_score": 44.8}]}, [], "")
 
 
+def test_draft_keeps_scores_in_one_final_line_and_rejects_overclaims():
+    skeleton = (
+        "Dallas, Houston and Atlanta are the most exposed to heat disruption, with Dallas on top. "
+        "Dallas had 153 days reaching 95 F in 2025. "
+        "Scores: Dallas 81.2, Houston 61.9, Atlanta 39.9 (higher = more exposed)."
+    )
+    assert _draft_is_usable(skeleton, {}, [], skeleton)
+    woven = skeleton.replace("Dallas had 153", "Dallas at 81.2 had 153")
+    assert not _draft_is_usable(woven, {}, [], skeleton)
+    assert not _draft_is_usable(skeleton.replace(" (higher = more exposed)", ""), {}, [], skeleton)
+    assert not _draft_is_usable(
+        "Dallas had 153 days reaching 95 F in 2025. Scores: (higher = more exposed).",
+        {},
+        [],
+        skeleton,
+    )
+    counted = "Denver hub (Mountain region) had 151 freezing days (41.4% of the year)."
+    assert not _draft_is_usable(counted + " Scores: (higher = more exposed).", {"rankings": [{"focus_score": 52.5}]}, [], counted)
+    assert not _draft_is_usable("Denver had a significant portion of the year.", {}, [], counted)
+    assert not _draft_is_usable("Denver is the most exposed hub.", {}, [], counted)
+
+
 def test_day_count_draft_accepts_a_degree_symbol():
     skeleton = (
         "Minneapolis hub has the most freeze days: 212 of 365, 58.1%. "
@@ -146,8 +168,10 @@ def test_snow_answer_leads_with_count_threshold_and_source(client):
 def test_explain_lists_heat_and_skips_unpublished_hurricane(client):
     body = _chat(client, "Why is the Denver hub's weather disruption risk high?")
     text = body["answer"]["answer"]
-    assert "Denver hub (Mountain region)" in text
-    assert "Based on 2025 weather data and FEMA risk data." in text
+    assert "Denver" in text
+    assert "Sources:" in text
+    assert "FEMA NRI" in text
+    assert "freeze-day rate" not in text.lower()
     assert "not a probability" not in text.lower()
     assert "weather-day rates" not in text.lower()
     assert "hurricane" not in text.lower()
@@ -172,9 +196,9 @@ def test_explain_lists_heat_and_skips_unpublished_hurricane(client):
 def test_rank_explains_second_and_third(client):
     body = _chat(client, "Which hubs in the Midwest are most exposed to winter disruption?")
     text = body["answer"]["answer"]
-    assert "Minneapolis hub (Midwest region)" in text
-    assert "Chicago hub (Midwest region)" in text
-    assert "Detroit hub (Midwest region)" in text
+    assert text.startswith("Minneapolis, Detroit and Chicago")
+    assert "Chicago" in text
+    assert "Detroit" in text
     assert "Scores:" in text
     assert not any(char.isdigit() for char in text.split(".", 1)[0])
 

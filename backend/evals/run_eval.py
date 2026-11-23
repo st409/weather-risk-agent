@@ -87,17 +87,57 @@ def _check(expect: dict, body: dict) -> list[str]:
             errors.append(f"answer unexpectedly mentions {needle}")
     if expect.get("answer_regex") and not re.search(expect["answer_regex"], text, re.S):
         errors.append("answer regex failed")
+    evidence = body.get("evidence") or {}
+    if expect.get("no_internal_labels"):
+        spoken = text.split("Contributors, largest first", 1)[0].lower()
+        for label in (
+            "freeze-day rate",
+            "snow-day rate",
+            "high-wind rate",
+            "heavy-rain rate",
+            "fema winter baseline",
+            "fema flood baseline",
+            "fema hurricane baseline",
+            "severe-storm baseline",
+            "coastal surge flag",
+        ):
+            if label in spoken:
+                errors.append(f"internal label {label}")
+    if expect.get("names_top_hubs"):
+        opening = _opening_sentence(text)
+        rows = (evidence.get("rankings") or [])[:3]
+        named = [row for row in rows if str(row.get("name") or "") and str(row["name"]) in opening]
+        needed = min(2, len(rows))
+        if len(named) < needed:
+            errors.append("opening does not name the top hubs")
     if expect.get("opening_has_no_digits"):
         opening = _opening_sentence(text)
         if re.search(r"\d", opening):
             errors.append(f"opening sentence has a digit: {opening}")
+    if expect.get("scores_are_final"):
+        pieces = re.split(r"Scores:", text, maxsplit=1)
+        if len(pieces) != 2 or text.lower().count("scores:") != 1:
+            errors.append("scores line must appear once")
+        else:
+            line = re.split(r"Sources:|Contributors,", pieces[1], maxsplit=1)[0]
+            if not re.search(r"\d", line):
+                errors.append("empty scores line")
+            for number in re.findall(r"\d+\.\d+", line):
+                if number in pieces[0]:
+                    errors.append(f"score {number} appears before the scores line")
+            if expect.get("scores_match_prose"):
+                score_body = re.sub(r"\(higher = more exposed\)", "", line, flags=re.I)
+                for piece in score_body.split(","):
+                    named = re.search(r"(.+?)\s+\d", piece)
+                    if named and named.group(1).strip() not in pieces[0]:
+                        errors.append(f"scores lists {named.group(1).strip()} but the prose does not")
     if expect.get("scores_last"):
-        match = re.search(r"Scores:.*?(?=\s+Based on|\s+Contributors,|$)", text, re.S)
+        match = re.search(r"Scores:.*?(?=\s+Sources:|\s+Based on|\s+Contributors,|$)", text, re.S)
         if match is None:
             errors.append("missing scores line")
         else:
             after = text[match.end() :].strip()
-            if after and not after.startswith("Based on") and "Contributors, largest first" not in after:
+            if after and not after.startswith(("Sources:", "Based on")) and "Contributors, largest first" not in after:
                 errors.append("text after the scores line")
     if expect.get("has_assumptions") and not answer["assumptions"]:
         errors.append("no assumptions")
@@ -130,7 +170,6 @@ def _check(expect: dict, body: dict) -> list[str]:
     for needle in expect.get("followups_contains", []):
         if needle.lower() not in followups:
             errors.append(f"follow-up missing {needle}")
-    evidence = body.get("evidence") or {}
     if expect.get("has_breakdown") and (not evidence.get("breakdown") or not evidence.get("details")):
         errors.append("missing breakdown/details")
     breakdown = evidence.get("breakdown") or ""
