@@ -1,0 +1,19 @@
+{
+  "name": "FEMA National Risk Index county hazard-type risk index scores",
+  "service_url": "https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/National_Risk_Index_Counties/FeatureServer/0",
+  "item_url": "https://www.arcgis.com/home/item.html?id=39485e8035d446a5bff03259508ae355",
+  "retrieved_at": "2026-11-23",
+  "version_note": "The ArcGIS item for this counties layer identified National Risk Index data version December 2025 (v1.20.0). Values in the CSV are the hazard-type risk index scores returned for the ten hub counties on 2026-11-23.",
+  "scale_note": "These are FEMA's published 0-100 hazard-type risk index scores, used directly. A blank hurricane or coastal-flood cell means the service returned null. The scorer treats that unpublished cell as 0 and says so when that hazard is on screen.",
+  "fields": {
+    "winter_weather": "WNTW_RISKS",
+    "inland_flood": "IFLD_RISKS",
+    "coastal_flood": "CFLD_RISKS",
+    "hurricane": "HRCN_RISKS",
+    "heat_wave": "HWAV_RISKS",
+    "tornado": "TRND_RISKS",
+    "lightning": "LTNG_RISKS",
+    "hail": "HAIL_RISKS",
+    "strong_wind": "SWND_RISKS"
+  }
+}

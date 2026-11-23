@@ -1,0 +1,135 @@
+[
+  {
+    "id": "midwest_winter",
+    "turns": ["Which hubs in the Midwest are most exposed to winter disruption?"],
+    "expect": {
+      "intent": "rank_hubs",
+      "answer_contains": ["Minneapolis hub (Midwest region)", "Chicago hub (Midwest region)", "Detroit hub (Midwest region)", "is lower", "Contributors, largest first"],
+      "contributors_sum": true,
+      "answer_excludes": ["Miami", "Los Angeles"],
+      "score_hazard": "winter",
+      "has_assumptions": true,
+      "has_sources": true,
+      "has_uncertainties": true
+    }
+  },
+  {
+    "id": "miami_houston",
+    "turns": ["Compare Miami and Houston in terms of hurricane and flood exposure."],
+    "expect": {
+      "intent": "compare_hubs",
+      "answer_contains": ["Miami hub (South region)", "Houston hub (South region)", "hurricane", "flood", "practically tied", "does not separate"],
+      "score_hazards": ["hurricane", "flood"],
+      "has_assumptions": true,
+      "has_sources": true
+    }
+  },
+  {
+    "id": "denver_snowfall",
+    "turns": ["What percentage of days in Denver last year had snowfall?"],
+    "expect": {
+      "intent": "metric_lookup",
+      "answer_regex": "\\d+(\\.\\d+)?%",
+      "metric_non_null": true,
+      "has_sources": true,
+      "has_assumptions": true
+    }
+  },
+  {
+    "id": "dallas_explain",
+    "turns": ["Why is the Dallas hub's weather disruption risk high?"],
+    "expect": {
+      "intent": "explain_hub",
+      "answer_contains": ["Dallas hub (South region)", "Contributors, largest first", "heat", "hurricane"],
+      "uncertainties_exclude": ["coastal-flood"],
+      "contributors_sum": true,
+      "has_assumptions": true,
+      "has_sources": true,
+      "has_uncertainties": true,
+      "has_drivers": true
+    }
+  },
+  {
+    "id": "flood_follow_up",
+    "turns": [
+      "Compare Miami and Houston in terms of hurricane and flood exposure.",
+      "What about floods only?"
+    ],
+    "expect": {
+      "intent": "compare_hubs",
+      "hub_ids": ["miami", "houston"],
+      "hazards": ["flood"],
+      "answer_contains": ["Miami", "Houston", "flood"],
+      "score_hazard": "flood",
+      "has_assumptions": true,
+      "has_sources": true
+    }
+  },
+  {
+    "id": "why_top",
+    "turns": [
+      "Which hubs in the Midwest are most exposed to winter disruption?",
+      "Why is the top one risky?"
+    ],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["minneapolis"],
+      "answer_contains": ["Minneapolis"],
+      "has_drivers": true,
+      "has_assumptions": true,
+      "has_sources": true
+    }
+  },
+  {
+    "id": "unknown_hub",
+    "turns": ["How exposed is Phoenix to heat?"],
+    "expect": {
+      "needs_clarification": true,
+      "answer_contains": ["Phoenix"]
+    }
+  },
+  {
+    "id": "safer_defines_or_asks",
+    "turns": ["Which is safer?"],
+    "expect": {
+      "needs_clarification": true,
+      "answer_contains": ["lower", "disruption"]
+    }
+  },
+  {
+    "id": "direct_endpoints",
+    "kind": "endpoints"
+  },
+  {
+    "id": "schema_fallback",
+    "kind": "schema_fallback"
+  },
+  {
+    "id": "denver_snow_days_fact",
+    "turns": ["How many days did it snow in Denver last year?"],
+    "expect": {
+      "intent": "metric_lookup",
+      "answer_contains": ["Denver hub (Mountain region)", ">= 1 cm", "Open-Meteo"],
+      "answer_excludes": ["risk score", "/100", "hurricane"],
+      "answer_regex": "\\d+(\\.\\d+)?%",
+      "has_sources": true,
+      "has_uncertainties": true,
+      "followups_exclude": ["snow", "How many days did it snow"]
+    }
+  },
+  {
+    "id": "denver_explain_all_contributors",
+    "turns": ["Why is the Denver hub's weather disruption risk high?"],
+    "expect": {
+      "intent": "explain_hub",
+      "hub_ids": ["denver"],
+      "answer_contains": ["Denver hub (Mountain region)", "Contributors, largest first", "These points sum to", "heat"],
+      "answer_excludes": ["hurricane"],
+      "uncertainties_exclude": ["hurricane", "coastal-flood"],
+      "contributors_sum": true,
+      "has_uncertainties": true,
+      "has_sources": true,
+      "followups_exclude": ["Why is Denver", "Why is the Denver", "Miami", "Houston", "Chicago", "Dallas"]
+    }
+  }
+]

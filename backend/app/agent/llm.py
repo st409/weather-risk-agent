@@ -1,0 +1,155 @@
+"""Schema-checked model calls.
+
+The model may draft an intent or a paragraph. It does not calculate scores.
+If the key is missing, or the payload fails schema validation twice, callers
+keep the deterministic result.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+
+from pydantic import BaseModel, ValidationError
+
+from app.agent.schemas import (
+    ANSWER_JSON_SCHEMA,
+    INTENT_JSON_SCHEMA,
+    AnswerDraft,
+    IntentResult,
+)
+from app.config import llm_disabled, openai_api_key, openai_model
+
+INTENT_SYSTEM = """You convert one chat turn about weather disruption at a fixed set of US logistics hubs into JSON.
+Do not compute scores, rankings, or percentages.
+Use only hub ids from the list in the user message.
+The user message includes previous_turn from this same chat. Read it before you classify.
+If the new message continues that turn and does not name new hubs, set intent to follow_up and leave hub_ids empty.
+A follow-up such as "What about floods only?" or "ומה לגבי שיטפונות בלבד?" keeps the previous hubs and changes only the hazard the user just named.
+If a place is outside the hub list, set needs_clarification to true and name the place in clarifying_question.
+Set needs_clarification to false when the request can be answered from the hub list."""
+
+ANSWER_SYSTEM = """You rewrite a factual skeleton into a logistics briefing.
+Start with the direct answer. If the skeleton is a day count, lead with the count, the percent, the >= 1 cm threshold, and the Open-Meteo source. Do not add a risk score.
+When the skeleton explains a score, keep every contributor it names, largest first, including heat, and keep the line that shows those points sum to the total. Do not shorten that list.
+Name each place as "<Name> hub (<Region> region)". If the skeleton says two scores are practically tied, keep that. If it says a FEMA baseline does not separate two hubs, keep each hub's own baseline value and the differentiating observed metric.
+Keep one relevant uncertainty from the skeleton. Do not mention a hazard the skeleton left out.
+Use only numbers that appear in the skeleton or the evidence. Do not invent hubs, drivers, or scores. A snow day is daily snowfall >= 1 cm.
+Return follow_up_questions as an empty list. The server supplies them."""
+
+
+def llm_enabled() -> bool:
+    return bool(openai_api_key()) and not llm_disabled()
+
+
+def extract_json(text: str) -> str:
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?", "", raw, flags=re.I).strip()
+        raw = re.sub(r"```$", "", raw).strip()
+    return raw
+
+
+def schema_retries(load_text, model_cls: type[BaseModel]) -> tuple[BaseModel | None, int]:
+    """Try twice. load_text receives the previous validation error, or None."""
+    error: Exception | None = None
+    for attempt in range(2):
+        text = load_text(error)
+        try:
+            return model_cls.model_validate_json(extract_json(text)), attempt + 1
+        except (ValidationError, json.JSONDecodeError) as exc:
+            error = exc
+    return None, 2
+
+
+def intent_user_message(message: str, previous_turn: str, hub_catalog: str) -> str:
+    return (
+        f"Hubs:\n{hub_catalog}\n\n"
+        f"previous_turn:\n{previous_turn}\n\n"
+        f"User message:\n{message}"
+    )
+
+
+def answer_user_message(question: str, read_only_scores: list, evidence: dict, skeleton: str, previous_turn: dict) -> str:
+    payload = {
+        "question": question,
+        "previous_turn": previous_turn,
+        "detail_requested": evidence.get("detail"),
+        "read_only_scores": read_only_scores,
+        "factual_skeleton": skeleton,
+        "evidence": evidence,
+    }
+    return "Rewrite factual_skeleton. Do not add numbers that are not in it.\n\n" + json.dumps(payload, ensure_ascii=True)
+
+
+def request_intent(message: str, previous_turn: str, hub_catalog: str) -> tuple[IntentResult | None, str | None]:
+    parsed, note = _request(
+        INTENT_SYSTEM,
+        intent_user_message(message, previous_turn, hub_catalog),
+        "intent_result",
+        INTENT_JSON_SCHEMA,
+        IntentResult,
+    )
+    return parsed, note  # type: ignore[return-value]
+
+
+def request_answer(
+    question: str,
+    read_only_scores: list,
+    evidence: dict,
+    skeleton: str,
+    previous_turn: dict,
+) -> tuple[AnswerDraft | None, str | None]:
+    parsed, note = _request(
+        ANSWER_SYSTEM,
+        answer_user_message(question, read_only_scores, evidence, skeleton, previous_turn),
+        "answer_draft",
+        ANSWER_JSON_SCHEMA,
+        AnswerDraft,
+    )
+    return parsed, note  # type: ignore[return-value]
+
+
+def _request(system: str, user: str, schema_name: str, schema: dict, model_cls: type[BaseModel]):
+    if not llm_enabled():
+        return None, None
+    try:
+        from openai import OpenAI
+    except Exception as exc:
+        return None, f"language model client unavailable ({exc.__class__.__name__})"
+    client = OpenAI(api_key=openai_api_key(), timeout=25.0, max_retries=0)
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    def load_text(error: Exception | None) -> str:
+        if error is not None:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"Schema validation failed: {error}. Return corrected JSON only.",
+                }
+            )
+        try:
+            completion = client.chat.completions.create(
+                model=openai_model(),
+                messages=messages,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": schema_name, "strict": True, "schema": schema},
+                },
+            )
+        except Exception as exc:
+            raise RuntimeError(exc.__class__.__name__) from exc
+        text = completion.choices[0].message.content or ""
+        messages.append({"role": "assistant", "content": text})
+        return text
+
+    try:
+        parsed, _attempts = schema_retries(load_text, model_cls)
+    except RuntimeError as exc:
+        return None, f"language model request failed ({exc})"
+    if parsed is None:
+        return None, "schema validation failed twice"
+    return parsed, None
