@@ -271,32 +271,32 @@ button, textarea { font: inherit; color: inherit; }
 }
 
 .composer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   background: #fff;
   border: 1px solid #f0eef6;
-  border-radius: 22px;
+  border-radius: 18px;
   box-shadow: 0 16px 40px rgba(90, 70, 150, 0.08);
-  padding: 14px 14px 12px;
+  padding: 8px 8px 8px 16px;
 }
 
 .composer textarea {
+  flex: 1;
   width: 100%;
   border: 0;
   resize: none;
-  min-height: 52px;
-  max-height: 140px;
+  min-height: 24px;
+  max-height: 120px;
+  margin: 0;
+  padding: 6px 0;
   outline: none;
   background: transparent;
   font-size: 15px;
+  line-height: 1.4;
 }
 
 .composer textarea::placeholder { color: #b7b3c2; }
-
-.composer-bar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  margin-top: 6px;
-}
 
 .send {
   width: 36px;

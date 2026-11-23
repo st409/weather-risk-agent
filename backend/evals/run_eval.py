@@ -66,6 +66,20 @@ def _chat_case(client, case, answer_model, intent_model) -> list[str]:
     return _check(case.get("expect") or {}, body)
 
 
+def _reason_shape_errors(text: str) -> list[str]:
+    """Dangling leftovers from cutting a score number out of a sentence."""
+    reason = re.split(r"(?i)\bScores\s*:", text, maxsplit=1)[0]
+    reason = re.split(r"(?i)\bSources\s*:", reason, maxsplit=1)[0]
+    errors = []
+    if re.search(r"\bscore of\s*\.", reason, re.I):
+        errors.append('dangling "score of."')
+    if re.search(r"\bscore for\s+[A-Za-z][\w./ ]{0,40}?\s+is\s*\.", reason, re.I):
+        errors.append('dangling "score for X is."')
+    if re.search(r"\b[A-Za-z][\w./]*\s+while\s+[A-Za-z][\w./]*\s*,", reason):
+        errors.append('dangling "X while Y,"')
+    return errors
+
+
 def _check(expect: dict, body: dict) -> list[str]:
     errors = []
     answer = body["answer"]
@@ -125,6 +139,7 @@ def _check(expect: dict, body: dict) -> list[str]:
         errors.append('hollow "score of"')
     if len(re.findall(r"higher\s*=\s*more\s+exposed", text, re.I)) > 1:
         errors.append("score legend appears twice")
+    errors.extend(_reason_shape_errors(text))
     if expect.get("scores_are_final"):
         pieces = re.split(r"Scores:", text, maxsplit=1)
         if len(pieces) != 2 or text.lower().count("scores:") != 1:

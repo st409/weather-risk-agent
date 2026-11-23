@@ -184,6 +184,47 @@ def test_fema_snapshot_uses_published_scores():
     assert miami.flood == 99.71 or miami.flood == 99.60 or miami.flood >= 99
 
 
+def test_inch_snowfall_is_stored_as_centimeters(monkeypatch):
+    from app.risk.weather import _fetch_open_meteo, _to_cm
+
+    assert _to_cm(1.0, "inch") == pytest.approx(2.54)
+    assert _to_cm(0.4, "inch") == pytest.approx(1.016)
+    assert _to_cm(12.0, "cm") == 12.0
+    payload = {
+        "daily_units": {
+            "snowfall_sum": "inch",
+            "temperature_2m_max": "°F",
+            "temperature_2m_min": "°F",
+            "precipitation_sum": "inch",
+            "wind_gusts_10m_max": "mp/h",
+        },
+        "daily": {
+            "time": ["2025-01-01", "2025-01-02", "2025-01-03"],
+            "snowfall_sum": [1.0, 0.4, 0.2],
+            "temperature_2m_max": [40.0, 40.0, 40.0],
+            "temperature_2m_min": [20.0, 20.0, 20.0],
+            "precipitation_sum": [0.1, 0.1, 0.1],
+            "wind_gusts_10m_max": [10.0, 10.0, 10.0],
+        },
+    }
+    seen = {}
+
+    def fake_get(url, params=None, headers=None):
+        seen["params"] = params
+        return payload
+
+    monkeypatch.setattr("app.risk.weather._get_json", fake_get)
+    rows, _retrieved = _fetch_open_meteo(HUB_BY_ID["denver"], date(2025, 1, 1), date(2025, 12, 31))
+    assert seen["params"]["timezone"] == "America/Denver"
+    assert seen["params"]["precipitation_unit"] == "inch"
+    assert seen["params"]["start_date"] == "2025-01-01"
+    assert seen["params"]["end_date"] == "2025-12-31"
+    assert [row.snowfall_cm for row in rows] == pytest.approx([2.54, 1.016, 0.508])
+    metrics = metrics_from_days(rows)
+    assert metrics.snow_days == 2
+    assert metrics.snow_valid_days == 3
+
+
 def test_default_window_is_previous_calendar_year():
     start, end, key, label = resolve_window(None, today=date(2026, 11, 23))
     assert key == "last_calendar_year"

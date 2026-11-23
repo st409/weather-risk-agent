@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agent.composer import WINDOW_NOTICE, _draft_is_usable, _fact_numbers, _prepare_draft, apply_model_prose
+from app.agent.composer import WINDOW_NOTICE, _draft_is_usable, _fact_numbers, apply_model_prose
 from app.agent.llm import ANSWER_SYSTEM
 from app.agent.schemas import AnswerDraft, AnswerResult, IntentResult
 from app.db.repository import get_daily_window, latest_score, save_daily_window, save_score_snapshot, seed_reference_data
@@ -94,8 +94,9 @@ def test_draft_keeps_scores_in_one_final_line_and_rejects_overclaims():
     woven = skeleton.replace("Dallas had 153", "Dallas at 81.2 had 153")
     assert _draft_is_usable(woven, {}, [], skeleton)
     kept_scores = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=woven), None, {})
-    assert "81.2" not in kept_scores.answer.split("Scores:", 1)[0]
-    assert "81.2" in kept_scores.answer
+    assert kept_scores.fallback is False
+    assert "Dallas at 81.2 had 153" in kept_scores.answer
+    assert "score of." not in kept_scores.answer.lower()
     assert _draft_is_usable(skeleton.replace(" (higher = more exposed)", ""), {}, [], skeleton)
     assert not _draft_is_usable(
         "Dallas had 153 days reaching 95 F in 2025. Scores: (higher = more exposed).",
@@ -104,9 +105,14 @@ def test_draft_keeps_scores_in_one_final_line_and_rejects_overclaims():
         skeleton,
     )
     counted = "Denver hub (Mountain region) had 151 freezing days (41.4% of the year)."
-    stripped = _prepare_draft(counted + " Scores: (higher = more exposed).", counted)
-    assert "Scores:" not in stripped
-    assert _draft_is_usable(stripped, {"rankings": [{"focus_score": 52.5}]}, [], counted)
+    kept_count = apply_model_prose(
+        AnswerResult(answer=counted),
+        AnswerDraft(answer=counted + " Scores: (higher = more exposed)."),
+        None,
+        {},
+    )
+    assert "Scores:" not in kept_count.answer
+    assert kept_count.fallback is False
     assert not _draft_is_usable("Denver had a significant portion of the year.", {}, [], counted)
     assert not _draft_is_usable("Denver is the most exposed hub.", {}, [], counted)
 
@@ -154,12 +160,11 @@ def test_score_clauses_are_removed_whole():
         "Scores: Dallas 81.2, Atlanta 39.9 (higher = more exposed)."
     )
     for skeleton, draft in ((rank, rank_draft), (safest, safest_draft), (excluded, excluded_draft), (compared, compared_draft)):
-        cleaned = _prepare_draft(draft, skeleton)
-        reason = cleaned.split("Scores:", 1)[0]
-        assert "score of" not in reason.lower()
-        assert "overall scores" not in reason.lower()
-        assert cleaned.lower().count("higher = more exposed") == 1
-        assert _draft_is_usable(cleaned, {}, [], skeleton)
+        shown = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=draft), None, {})
+        assert shown.fallback is False
+        assert shown.answer == draft.strip()
+        assert "score of." not in shown.answer.lower()
+        assert "score for" not in shown.answer.lower() or not shown.answer.lower().rstrip().endswith("is.")
 
 
 def test_day_count_words_and_a_missing_notice_still_keep_the_draft():
@@ -179,9 +184,9 @@ def test_day_count_words_and_a_missing_notice_still_keep_the_draft():
     assert not _draft_is_usable(draft.replace("eight", "nine"), {}, [], skeleton)
     assert not _draft_is_usable(draft.replace("two point seven", "8.1"), {}, [], skeleton)
     kept = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=draft + " It has a score of 57.5."), None, {})
-    assert kept.fallback is False
-    assert "57.5" not in kept.answer
-    assert "score of" not in kept.answer.lower()
+    assert kept.fallback is True
+    assert kept.answer == skeleton
+    assert "score of." not in kept.answer.lower()
     noticed = apply_model_prose(
         AnswerResult(answer=f"{WINDOW_NOTICE} {skeleton}"),
         AnswerDraft(answer=draft),
@@ -323,6 +328,24 @@ def test_rank_explains_second_and_third(client):
     assert not any(char.isdigit() for char in text.split(".", 1)[0])
 
 
+def test_where_to_invest_suggests_from_the_leaders_drivers(client):
+    body = _chat(client, "Where should we invest to reduce weather disruption?")
+    text = body["answer"]["answer"]
+    assert body["intent"]["intent"] == "rank_hubs"
+    assert "most vulnerable" in text
+    assert "Based on those risk drivers, the suggestion is" in text
+    suggestion = text.split("Based on those risk drivers", 1)[1].split("Scores:", 1)[0]
+    assert not any(char.isdigit() for char in suggestion)
+    assert "$" not in text
+    assert "cost" not in text.lower()
+    strengthened = _chat(client, "What should we strengthen in Miami?")
+    miami = strengthened["answer"]["answer"]
+    assert strengthened["intent"]["intent"] == "explain_hub"
+    assert "Miami" in miami
+    assert "Based on those risk drivers, the suggestion is" in miami
+    assert not any(char.isdigit() for char in miami.split("Based on those risk drivers", 1)[1].split("Scores:", 1)[0])
+
+
 def test_compare_ties_and_keeps_each_baseline(client):
     body = _chat(client, "Compare Miami and Houston in terms of hurricane and flood exposure.")
     text = body["answer"]["answer"]
@@ -343,6 +366,16 @@ def test_stale_cache_note_and_score_use_one_centimeter(tmp_path, monkeypatch):
         lambda _hub: (
             {"winter": 0.0, "flood": 0.0, "hurricane": 0.0, "heat": 0.0, "severe_storm": 0.0},
             [],
+            "2026-11-23T00:00:00+00:00",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.risk.weather._fetch_open_meteo",
+        lambda _hub, start, end: (
+            [
+                DailyObs(start.isoformat(), 40.0, 20.0, 0.0, 0.4, 10.0),
+                DailyObs(end.isoformat(), 41.0, 21.0, 0.0, 1.5, 12.0),
+            ],
             "2026-11-23T00:00:00+00:00",
         ),
     )

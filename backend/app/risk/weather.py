@@ -60,17 +60,11 @@ def _fixture_batch(hub: Hub, start: date, end: date, reason: str) -> DailyBatch:
 
 
 def open_meteo_note() -> str:
-    """Current snow-day wording. Cached windows must not keep an older definition."""
+    """Current snow-day wording. Cached windows must not keep an older unit or definition."""
     return (
-        "Open-Meteo archive reanalysis (ERA5 / IFS blend). A snow day is daily snowfall_sum >= 1 cm. "
-        "This is not a station log."
+        "Open-Meteo archive reanalysis (ERA5 / IFS blend). Snowfall is stored in centimeters. "
+        "A snow day is daily snowfall_sum >= 1 cm. This is not a station log."
     )
-
-
-def _cached_weather_note(stored: str) -> str:
-    if "above 0" in (stored or "").lower():
-        return open_meteo_note()
-    return stored
 
 
 def load_daily(hub: Hub, start: date, end: date, force: bool = False) -> DailyBatch:
@@ -84,17 +78,15 @@ def load_daily(hub: Hub, start: date, end: date, force: bool = False) -> DailyBa
     if not force:
         cached = repository.get_daily_window(hub.hub_id, start.isoformat(), end.isoformat())
         if cached and not cached["fallback"]:
-            note = _cached_weather_note(cached["uncertainty_note"])
-            if note != cached["uncertainty_note"]:
-                repository.replace_window_note(hub.hub_id, start.isoformat(), end.isoformat(), note)
-                repository.delete_scores_for_window(hub.hub_id, start.isoformat(), end.isoformat())
-            source = SourceRef(
-                name=cached["source_name"],
-                source_type="cached_api",
-                retrieved_at=cached["retrieved_at"],
-                uncertainty_note=note,
-            )
-            return DailyBatch(days=[_obs_from_dict(row) for row in cached["days"]], source=source, fallback=False)
+            if cached["uncertainty_note"] == open_meteo_note():
+                source = SourceRef(
+                    name=cached["source_name"],
+                    source_type="cached_api",
+                    retrieved_at=cached["retrieved_at"],
+                    uncertainty_note=cached["uncertainty_note"],
+                )
+                return DailyBatch(days=[_obs_from_dict(row) for row in cached["days"]], source=source, fallback=False)
+            repository.delete_scores_for_window(hub.hub_id, start.isoformat(), end.isoformat())
     try:
         days, retrieved_at = _fetch_open_meteo(hub, start, end)
     except Exception as exc:
@@ -222,7 +214,7 @@ def _fetch_open_meteo(hub: Hub, start: date, end: date) -> tuple[list[DailyObs],
                 temp_max_f=_to_f(_at(daily, "temperature_2m_max", index), units.get("temperature_2m_max", "")),
                 temp_min_f=_to_f(_at(daily, "temperature_2m_min", index), units.get("temperature_2m_min", "")),
                 precip_in=_to_inches(_at(daily, "precipitation_sum", index), units.get("precipitation_sum", "")),
-                snowfall_cm=_at(daily, "snowfall_sum", index),
+                snowfall_cm=_to_cm(_at(daily, "snowfall_sum", index), units.get("snowfall_sum", "")),
                 wind_gust_mph=_to_mph(_at(daily, "wind_gusts_10m_max", index), units.get("wind_gusts_10m_max", "")),
             )
         )
@@ -300,6 +292,18 @@ def _to_f(value: float | None, unit: str) -> float | None:
     text = unit.lower()
     if "c" in text and "f" not in text:
         return value * 9.0 / 5.0 + 32.0
+    return value
+
+
+def _to_cm(value: float | None, unit: str) -> float | None:
+    """Open-Meteo returns snowfall in inches when precipitation_unit is inch."""
+    if value is None:
+        return None
+    text = (unit or "").lower()
+    if "inch" in text or text.strip() == "in":
+        return value * 2.54
+    if "mm" in text:
+        return value / 10.0
     return value
 
 

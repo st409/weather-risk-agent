@@ -129,6 +129,7 @@ class ParsedMessage:
     ordinal_index: int | None = None
     unsupported_window: bool = False
     explain_gap: bool = False
+    asks_investment: bool = False
     text: str = ""
 
 
@@ -150,6 +151,7 @@ class ResolvedIntent:
     excluded_hazards: list[str] = field(default_factory=list)
     unsupported_window: bool = False
     explain_gap: bool = False
+    asks_investment: bool = False
     show_score_legend: bool = True
 
     def view(self) -> dict:
@@ -194,6 +196,7 @@ def parse_message(message: str) -> ParsedMessage:
     asks_why_top = bool(why and not hub_ids and re.search(r"\b(top|first|highest|that one)\b", low))
     metric_q = _is_metric_question(low)
     compare = bool(re.search(r"\b(compare|comparison|versus|vs\.?|between)\b", low))
+    investment = bool(re.search(r"\b(?:invest\w*|strengthen\w*)\b", low))
     rank = bool(re.search(r"\b(which|most|least|ranking|rank|highest|lowest|exposed|riskiest|safest|safer)\b", low))
     refers = _refers_back(low)
     followish = bool(refers or re.search(r"מה לגבי|ומה לגבי", low)) or (
@@ -238,6 +241,10 @@ def parse_message(message: str) -> ParsedMessage:
         intent = "explain_hub"
     elif metric_q:
         intent = "metric_lookup"
+    elif investment and len(hub_ids) == 1:
+        intent = "explain_hub"
+    elif investment:
+        intent = "rank_hubs"
     elif len(regions) > 1 or rank or (region and not hub_ids) or excluded:
         intent = "rank_hubs"
     elif compare or (len(hub_ids) >= 2 and not rank):
@@ -273,6 +280,7 @@ def parse_message(message: str) -> ParsedMessage:
         excluded_hazards=excluded,
         ordinal_index=ordinal,
         unsupported_window=unsupported_window,
+        asks_investment=investment,
         text=text,
     )
 
@@ -519,6 +527,7 @@ def _ok(parsed: ParsedMessage) -> ResolvedIntent:
         excluded_hazards=list(parsed.excluded_hazards),
         unsupported_window=parsed.unsupported_window,
         explain_gap=parsed.explain_gap,
+        asks_investment=parsed.asks_investment,
     )
 
 

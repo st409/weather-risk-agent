@@ -51,7 +51,7 @@ class SourceItem(BaseModel):
 
 
 class AnswerDraft(BaseModel):
-    """What the model is allowed to return. Scores and sources are not fields here."""
+    """What the model is allowed to return. Scores stay the values Python computed."""
 
     model_config = ConfigDict(extra="forbid")
 

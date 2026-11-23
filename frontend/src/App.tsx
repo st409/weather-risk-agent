@@ -294,6 +294,7 @@ function Composer({
     <form className="composer" onSubmit={onSubmit}>
       <textarea
         aria-label="Message"
+        rows={1}
         value={draft}
         placeholder="Ask about a hub, a region, or a hazard…"
         onChange={(event) => onDraft(event.target.value)}
@@ -304,11 +305,9 @@ function Composer({
           }
         }}
       />
-      <div className="composer-bar">
-        <button className="send" type="submit" aria-label="Send" disabled={pending || !draft.trim()}>
-          <ArrowIcon />
-        </button>
-      </div>
+      <button className="send" type="submit" aria-label="Send" disabled={pending || !draft.trim()}>
+        <ArrowIcon />
+      </button>
     </form>
   );
 }

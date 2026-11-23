@@ -314,6 +314,10 @@ def _rank_opening(resolved: ResolvedIntent, reports: list[HubReport], seen: set[
     leader = reports[0]
     tied = _tied_leaders(resolved, reports)
     topic = _topic_phrase(resolved)
+    if resolved.asks_investment and not resolved.safety_framing:
+        if len(tied) >= 2:
+            return f"{_name_list(tied[:3])} are effectively tied as the most vulnerable to {topic}."
+        return f"{leader.name} is the most vulnerable hub to {topic}."
     if len(tied) >= 2 and not resolved.safety_framing:
         names = _name_list(tied[:3])
         return f"{names} are effectively tied as the most exposed to {topic}."
@@ -569,11 +573,11 @@ def _rank_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> AnswerRe
     if not reports:
         return clarification_answer("None of the hubs in this set match that region.")
     seen: set[str] = set()
-    text = _finish_text(
-        resolved,
-        reports,
-        [_rank_opening(resolved, reports, seen), _rank_reason(resolved, reports, seen), _scores_line(resolved, _scored_reports(resolved, reports))],
-    )
+    sentences = [_rank_opening(resolved, reports, seen), _rank_reason(resolved, reports, seen)]
+    if resolved.asks_investment:
+        sentences.append(_investment_sentence(reports[0]))
+    sentences.append(_scores_line(resolved, _scored_reports(resolved, reports)))
+    text = _finish_text(resolved, reports, sentences)
     findings = [f"{report.name} {label} score: {_n(_rank_score(resolved, report))}" for report in reports[:5]]
     leader = reports[0]
     driver = _top_driver(leader, focus)
@@ -612,11 +616,11 @@ def _explain_answer(resolved: ResolvedIntent, reports: list[HubReport]) -> Answe
     report = reports[0]
     focus = resolved.hazards
     seen: set[str] = set()
-    text = _finish_text(
-        resolved,
-        [report],
-        [_explain_opening(resolved, report, seen), _explain_reason(resolved, report), _scores_line(resolved, [report])],
-    )
+    sentences = [_explain_opening(resolved, report, seen), _explain_reason(resolved, report)]
+    if resolved.asks_investment:
+        sentences.append(_investment_sentence(report))
+    sentences.append(_scores_line(resolved, [report]))
+    text = _finish_text(resolved, [report], sentences)
     findings = [f"{HAZARD_LABEL[hazard].capitalize()} score: {_n(report.hazards[hazard].score)}" for hazard in ("winter", "flood", "hurricane", "severe_storm", "heat")]
     findings.insert(0, f"Overall score: {_n(report.overall_score)}")
     return _pack(resolved, [report], text, findings, _followups_for(resolved, [report]))
@@ -1846,6 +1850,35 @@ def _why_sentence(report: HubReport, hazards: list[str], subject: str = "The sco
     return f"{subject} is led by {_join([_driver_phrase(driver) for driver in drivers])}."
 
 
+def _investment_sentence(report: HubReport) -> str:
+    """One or two suggestions from the largest overall drivers. No costs and no new numbers."""
+    hazards: list[str] = []
+    for driver in _ranked_drivers(report, ["overall"]):
+        name = str(driver.metric_name).removesuffix("_score")
+        if name in HAZARD_LABEL and name != "overall" and name not in hazards:
+            hazards.append(name)
+        if len(hazards) == 3:
+            break
+    phrases: list[str] = []
+    if "hurricane" in hazards and "flood" in hazards:
+        phrases.append("hurricane and flood protection")
+        hazards = [name for name in hazards if name not in {"hurricane", "flood"}]
+    elif "hurricane" in hazards:
+        phrases.append("hurricane protection")
+        hazards = [name for name in hazards if name != "hurricane"]
+    elif "flood" in hazards:
+        phrases.append("flood protection")
+        hazards = [name for name in hazards if name != "flood"]
+    readiness = {"winter": "winter readiness", "heat": "heat readiness", "severe_storm": "severe-storm readiness"}
+    for name in hazards:
+        if len(phrases) >= 2:
+            break
+        phrases.append(readiness.get(name, f"{HAZARD_LABEL[name]} readiness"))
+    if not phrases:
+        return ""
+    return f"Based on those risk drivers, the suggestion is {_join(phrases[:2])}."
+
+
 def _ranked_drivers(report: HubReport, hazards: list[str]):
     pool = []
     chosen = hazards or ["overall"]
@@ -2025,7 +2058,7 @@ def _ranking_score_numbers(evidence: dict | None) -> set[float]:
 
 
 def _prepare_draft(text: str, skeleton: str) -> str:
-    """Drop a scores line the skeleton does not use, and keep a single Sources line."""
+    """Keep the skeleton's Scores and Sources lines. Do not cut numbers out of the reason."""
     cleaned = (text or "").strip()
     if "Scores:" not in skeleton and re.search(r"(?i)\bScores:", cleaned):
         cleaned = re.sub(r"(?i)\s*Scores:.*?(?=(?:\s+Sources:)|\s*$)", "", cleaned, flags=re.S).strip()
@@ -2033,115 +2066,11 @@ def _prepare_draft(text: str, skeleton: str) -> str:
         scores = re.search(r"Scores:.*?(?=\s+Sources:|$)", skeleton, re.S)
         if scores:
             cleaned = f"{cleaned.rstrip()} {scores.group(0).strip()}".strip()
-    cleaned = _strip_scores_from_reason(cleaned, skeleton)
     if not re.search(r"(?i)\bSources\s*:", cleaned):
         match = re.search(r"Sources:.*", skeleton)
         if match:
             cleaned = f"{cleaned.rstrip()} {match.group(0).strip()}".strip()
     return cleaned
-
-
-_HAS_SCORE = re.compile(
-    r",?\s*(?:and\s+)?(?:has|have)\s+a\s+score\s+of(?:\s+\d+(?:\.\d+)?)?(?:\s+and)?",
-    re.I,
-)
-_WITH_SCORE = re.compile(r",?\s*(?:with|at)\s+a\s+score\s+of(?:\s+\d+(?:\.\d+)?)?", re.I)
-_BARE_SCORE = re.compile(r",?\s*(?:a\s+)?score\s+of(?:\s+\d+(?:\.\d+)?)?", re.I)
-_OVERALL_SCORES = re.compile(
-    r"(?:^|(?<=[.!?]))\s*(?:The\s+)?overall\s+scores?\s+(?:are|is)\s+[^.]*\.?",
-    re.I,
-)
-_KEEP_SENTENCE = re.compile(
-    r"\b(is|are|was|were|has|have|had|rates|rated|contributes|trails|reached|reaching|leads|lead|means|met)\b",
-    re.I,
-)
-
-
-def _phrase_is_score_talk(fragment: str, score_only: set[float] | None) -> bool:
-    numbers = [round(value, 1) for value in _fact_numbers(fragment)]
-    if score_only is None:
-        return True
-    return all(value in score_only for value in numbers)
-
-
-def _cut_score_talk(pattern: re.Pattern[str], text: str, score_only: set[float] | None) -> str:
-    def replace(match: re.Match[str]) -> str:
-        return "" if _phrase_is_score_talk(match.group(0), score_only) else match.group(0)
-
-    return pattern.sub(replace, text)
-
-
-def _clean_reason(text: str, score_only: set[float] | None) -> str:
-    """Drop a score clause whole, then the conjunction or punctuation it left behind."""
-    cleaned = _cut_score_talk(_HAS_SCORE, text, score_only)
-    cleaned = _cut_score_talk(_WITH_SCORE, cleaned, score_only)
-    cleaned = _cut_score_talk(_BARE_SCORE, cleaned, score_only)
-    cleaned = _cut_score_talk(_OVERALL_SCORES, cleaned, score_only)
-    cleaned = re.sub(r"\(\s*higher\s*=\s*more\s+exposed\s*\)", "", cleaned, flags=re.I)
-    if score_only:
-        cleaned = re.sub(
-            r"\s+at\s+(\d+(?:\.\d+)?)\b",
-            lambda match: "" if round(float(match.group(1)), 1) in score_only else match.group(0),
-            cleaned,
-        )
-        cleaned = re.sub(
-            r"\s+(\d+\.\d+)\b",
-            lambda match: "" if round(float(match.group(1)), 1) in score_only else match.group(0),
-            cleaned,
-        )
-        cleaned = _cut_score_talk(_OVERALL_SCORES, cleaned, score_only)
-    cleaned = re.sub(r"\s+while\s+[^.]*\bfollows closely\b[^.]*", "", cleaned, flags=re.I)
-    if cleaned == text:
-        return text
-    return _tidy_reason(cleaned)
-
-
-def _tidy_reason(text: str) -> str:
-    cleaned = re.sub(r"\s+(?:and|while|with|of)\s*(?=[.,;:]|$)", "", text, flags=re.I)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned)
-    cleaned = re.sub(r"\s+([.,;:])", r"\1", cleaned)
-    cleaned = re.sub(r"\s+\.", ".", cleaned)
-    sentences = []
-    for sentence in re.split(r"(?<=[.!?])\s+", cleaned.strip()):
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-        if not re.search(r"[A-Za-z0-9]", sentence):
-            continue
-        words = re.findall(r"[A-Za-z0-9/]+", sentence)
-        if (
-            not re.search(r"\d", sentence)
-            and not sentence.lower().startswith("no ")
-            and not _KEEP_SENTENCE.search(sentence)
-            and len(words) <= 3
-        ):
-            continue
-        if sentence[-1] not in ".!?":
-            sentence += "."
-        sentences.append(sentence)
-    return " ".join(sentences)
-
-
-def _strip_scores_from_reason(text: str, skeleton: str) -> str:
-    """Score numbers stay on the Scores line. Day counts in the reason stay."""
-    if re.search(r"(?i)\bScores:", text):
-        before, after = re.split(r"(?i)\bScores:", text, maxsplit=1)
-        clause = _scores_clause(skeleton) or ""
-        draft_clause = _scores_clause("Scores:" + after) or ""
-        skeleton_before = _before_scores(skeleton)
-        in_reason = {round(value, 1) for value in _fact_numbers(skeleton_before)}
-        score_only = {round(value, 1) for value in _fact_numbers(clause)} - in_reason
-        score_only |= {round(value, 1) for value in _fact_numbers(draft_clause)} - in_reason
-        before = _clean_reason(before, score_only)
-        gap = " " if before else ""
-        return f"{before}{gap}Scores:{after}"
-    source_match = re.search(r"(?i)\bSources\s*:.*", text, re.S)
-    body = text[: source_match.start()] if source_match else text
-    source = text[source_match.start() :] if source_match else ""
-    cleaned = _clean_reason(body, None)
-    if cleaned == _tidy_reason(body) and not re.search(r"\bscore of\b|overall\s+scores", body, re.I):
-        return text
-    return f"{cleaned} {source}".strip()
 
 
 _NUMBER_ONES = {
