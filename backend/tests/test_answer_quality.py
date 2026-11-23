@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agent.composer import WINDOW_NOTICE, _draft_is_usable, _prepare_draft, apply_model_prose
+from app.agent.composer import WINDOW_NOTICE, _draft_is_usable, _fact_numbers, _prepare_draft, apply_model_prose
 from app.agent.llm import ANSWER_SYSTEM
 from app.agent.schemas import AnswerDraft, AnswerResult, IntentResult
 from app.db.repository import get_daily_window, latest_score, save_daily_window, save_score_snapshot, seed_reference_data
@@ -109,6 +109,87 @@ def test_draft_keeps_scores_in_one_final_line_and_rejects_overclaims():
     assert _draft_is_usable(stripped, {"rankings": [{"focus_score": 52.5}]}, [], counted)
     assert not _draft_is_usable("Denver had a significant portion of the year.", {}, [], counted)
     assert not _draft_is_usable("Denver is the most exposed hub.", {}, [], counted)
+
+
+def test_score_clauses_are_removed_whole():
+    rank = (
+        "New York/Newark, Houston and Dallas are the most exposed, with New York/Newark slightly ahead. "
+        "FEMA rates New York/Newark a high historical hurricane-risk area. "
+        "Scores: New York/Newark 50.6, Houston 51.2, Dallas 47.1 (higher = more exposed)."
+    )
+    rank_draft = (
+        "New York/Newark, Houston and Dallas are the most exposed, with New York/Newark slightly ahead. "
+        "New York/Newark has a score of 50.6 while Houston follows closely with a score of 51.2. "
+        "FEMA rates New York/Newark a high historical hurricane-risk area. "
+        "Scores: New York/Newark 50.6, Houston 51.2, Dallas 47.1 (higher = more exposed)."
+    )
+    safest = (
+        "Los Angeles is the least exposed hub to weather disruption. Denver and Miami are riskier. "
+        "Scores: Los Angeles 26.8 (higher = more exposed)."
+    )
+    safest_draft = (
+        "Los Angeles is the least exposed hub to weather disruption with a score of 26.8. "
+        "Denver and Miami are riskier. "
+        "Scores: Los Angeles 26.8 (higher = more exposed)."
+    )
+    excluded = (
+        "Houston is the most exposed hub after removing winter. "
+        "The remaining drivers are hurricane and flood. FEMA rates it a high historical hurricane-risk area. "
+        "Scores: Houston 65.5 (higher = more exposed)."
+    )
+    excluded_draft = (
+        "Houston is the most exposed hub after removing winter. "
+        "It has a score of 65.5 and is a high historical hurricane-risk area. "
+        "Scores: Houston 65.5 (higher = more exposed)."
+    )
+    compared = (
+        "Dallas hub (South region) is more exposed to heat disruption than Atlanta hub (South region). "
+        "Dallas had 153 days reaching 95 F in 2025. "
+        "Scores: Dallas 81.2, Atlanta 39.9 (higher = more exposed)."
+    )
+    compared_draft = (
+        "Dallas hub (South region) is more exposed to heat disruption than Atlanta hub (South region). "
+        "Dallas had 153 days reaching 95 F in 2025. "
+        "The overall scores are Dallas 81.2 and Atlanta 39.9 (higher = more exposed). "
+        "Scores: Dallas 81.2, Atlanta 39.9 (higher = more exposed)."
+    )
+    for skeleton, draft in ((rank, rank_draft), (safest, safest_draft), (excluded, excluded_draft), (compared, compared_draft)):
+        cleaned = _prepare_draft(draft, skeleton)
+        reason = cleaned.split("Scores:", 1)[0]
+        assert "score of" not in reason.lower()
+        assert "overall scores" not in reason.lower()
+        assert cleaned.lower().count("higher = more exposed") == 1
+        assert _draft_is_usable(cleaned, {}, [], skeleton)
+
+
+def test_day_count_words_and_a_missing_notice_still_keep_the_draft():
+    skeleton = (
+        "Denver hub (Mountain region) had 8 snow days (2.7% of the year). "
+        "A snow day is daily snowfall >= 1 cm. Sources: Open-Meteo 2025 weather."
+    )
+    draft = (
+        "Denver hub (Mountain region) had eight snow days, two point seven percent of the year. "
+        "A snow day is daily snowfall >= 1 cm."
+    )
+    assert _fact_numbers("ten") == []
+    assert _fact_numbers("eight") == [8.0]
+    assert _fact_numbers("2.7 percent") == [2.7]
+    assert _draft_is_usable(draft, {}, [], skeleton)
+    assert _draft_is_usable(draft.replace("two point seven percent", "2.7 percent"), {}, [], skeleton)
+    assert not _draft_is_usable(draft.replace("eight", "nine"), {}, [], skeleton)
+    assert not _draft_is_usable(draft.replace("two point seven", "8.1"), {}, [], skeleton)
+    kept = apply_model_prose(AnswerResult(answer=skeleton), AnswerDraft(answer=draft + " It has a score of 57.5."), None, {})
+    assert kept.fallback is False
+    assert "57.5" not in kept.answer
+    assert "score of" not in kept.answer.lower()
+    noticed = apply_model_prose(
+        AnswerResult(answer=f"{WINDOW_NOTICE} {skeleton}"),
+        AnswerDraft(answer=draft),
+        None,
+        {"required_notice": WINDOW_NOTICE},
+    )
+    assert noticed.fallback is False
+    assert WINDOW_NOTICE in noticed.answer
 
 
 def test_assignment_paraphrases_do_not_fall_back(client):

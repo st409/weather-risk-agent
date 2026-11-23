@@ -121,6 +121,10 @@ def _check(expect: dict, body: dict) -> list[str]:
         visible = text + " " + " ".join(answer.get("uncertainties") or []) + " " + " ".join(answer.get("assumptions") or [])
         if "did not return a valid briefing" in visible.lower():
             errors.append("answer fell back to the skeleton")
+    if re.search(r"\bscore of(?!\s*\d)", text, re.I):
+        errors.append('hollow "score of"')
+    if len(re.findall(r"higher\s*=\s*more\s+exposed", text, re.I)) > 1:
+        errors.append("score legend appears twice")
     if expect.get("scores_are_final"):
         pieces = re.split(r"Scores:", text, maxsplit=1)
         if len(pieces) != 2 or text.lower().count("scores:") != 1:

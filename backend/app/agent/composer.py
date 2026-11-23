@@ -170,6 +170,9 @@ def apply_model_prose(
     assumptions = list(base.assumptions)
     if drafted is not None:
         cleaned = _prepare_draft(drafted.answer, base.answer)
+        notice = str((evidence or {}).get("required_notice") or "")
+        if notice and notice not in cleaned:
+            cleaned = f"{notice} {cleaned}".strip()
         reason = _draft_rejection(cleaned, evidence, base.scores, base.answer)
         if reason:
             logger.warning("draft rejected: %s | draft: %s", reason, cleaned[:240].replace("\n", " "))
@@ -2038,24 +2041,177 @@ def _prepare_draft(text: str, skeleton: str) -> str:
     return cleaned
 
 
+_HAS_SCORE = re.compile(
+    r",?\s*(?:and\s+)?(?:has|have)\s+a\s+score\s+of(?:\s+\d+(?:\.\d+)?)?(?:\s+and)?",
+    re.I,
+)
+_WITH_SCORE = re.compile(r",?\s*(?:with|at)\s+a\s+score\s+of(?:\s+\d+(?:\.\d+)?)?", re.I)
+_BARE_SCORE = re.compile(r",?\s*(?:a\s+)?score\s+of(?:\s+\d+(?:\.\d+)?)?", re.I)
+_OVERALL_SCORES = re.compile(
+    r"(?:^|(?<=[.!?]))\s*(?:The\s+)?overall\s+scores?\s+(?:are|is)\s+[^.]*\.?",
+    re.I,
+)
+_KEEP_SENTENCE = re.compile(
+    r"\b(is|are|was|were|has|have|had|rates|rated|contributes|trails|reached|reaching|leads|lead|means|met)\b",
+    re.I,
+)
+
+
+def _phrase_is_score_talk(fragment: str, score_only: set[float] | None) -> bool:
+    numbers = [round(value, 1) for value in _fact_numbers(fragment)]
+    if score_only is None:
+        return True
+    return all(value in score_only for value in numbers)
+
+
+def _cut_score_talk(pattern: re.Pattern[str], text: str, score_only: set[float] | None) -> str:
+    def replace(match: re.Match[str]) -> str:
+        return "" if _phrase_is_score_talk(match.group(0), score_only) else match.group(0)
+
+    return pattern.sub(replace, text)
+
+
+def _clean_reason(text: str, score_only: set[float] | None) -> str:
+    """Drop a score clause whole, then the conjunction or punctuation it left behind."""
+    cleaned = _cut_score_talk(_HAS_SCORE, text, score_only)
+    cleaned = _cut_score_talk(_WITH_SCORE, cleaned, score_only)
+    cleaned = _cut_score_talk(_BARE_SCORE, cleaned, score_only)
+    cleaned = _cut_score_talk(_OVERALL_SCORES, cleaned, score_only)
+    cleaned = re.sub(r"\(\s*higher\s*=\s*more\s+exposed\s*\)", "", cleaned, flags=re.I)
+    if score_only:
+        cleaned = re.sub(
+            r"\s+at\s+(\d+(?:\.\d+)?)\b",
+            lambda match: "" if round(float(match.group(1)), 1) in score_only else match.group(0),
+            cleaned,
+        )
+        cleaned = re.sub(
+            r"\s+(\d+\.\d+)\b",
+            lambda match: "" if round(float(match.group(1)), 1) in score_only else match.group(0),
+            cleaned,
+        )
+        cleaned = _cut_score_talk(_OVERALL_SCORES, cleaned, score_only)
+    cleaned = re.sub(r"\s+while\s+[^.]*\bfollows closely\b[^.]*", "", cleaned, flags=re.I)
+    if cleaned == text:
+        return text
+    return _tidy_reason(cleaned)
+
+
+def _tidy_reason(text: str) -> str:
+    cleaned = re.sub(r"\s+(?:and|while|with|of)\s*(?=[.,;:]|$)", "", text, flags=re.I)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([.,;:])", r"\1", cleaned)
+    cleaned = re.sub(r"\s+\.", ".", cleaned)
+    sentences = []
+    for sentence in re.split(r"(?<=[.!?])\s+", cleaned.strip()):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if not re.search(r"[A-Za-z0-9]", sentence):
+            continue
+        words = re.findall(r"[A-Za-z0-9/]+", sentence)
+        if (
+            not re.search(r"\d", sentence)
+            and not sentence.lower().startswith("no ")
+            and not _KEEP_SENTENCE.search(sentence)
+            and len(words) <= 3
+        ):
+            continue
+        if sentence[-1] not in ".!?":
+            sentence += "."
+        sentences.append(sentence)
+    return " ".join(sentences)
+
+
 def _strip_scores_from_reason(text: str, skeleton: str) -> str:
     """Score numbers stay on the Scores line. Day counts in the reason stay."""
-    if not re.search(r"(?i)\bScores:", text):
+    if re.search(r"(?i)\bScores:", text):
+        before, after = re.split(r"(?i)\bScores:", text, maxsplit=1)
+        clause = _scores_clause(skeleton) or ""
+        draft_clause = _scores_clause("Scores:" + after) or ""
+        skeleton_before = _before_scores(skeleton)
+        in_reason = {round(value, 1) for value in _fact_numbers(skeleton_before)}
+        score_only = {round(value, 1) for value in _fact_numbers(clause)} - in_reason
+        score_only |= {round(value, 1) for value in _fact_numbers(draft_clause)} - in_reason
+        before = _clean_reason(before, score_only)
+        gap = " " if before else ""
+        return f"{before}{gap}Scores:{after}"
+    source_match = re.search(r"(?i)\bSources\s*:.*", text, re.S)
+    body = text[: source_match.start()] if source_match else text
+    source = text[source_match.start() :] if source_match else ""
+    cleaned = _clean_reason(body, None)
+    if cleaned == _tidy_reason(body) and not re.search(r"\bscore of\b|overall\s+scores", body, re.I):
         return text
-    before, after = re.split(r"(?i)\bScores:", text, maxsplit=1)
-    clause = _scores_clause(skeleton) or ""
-    skeleton_before = _before_scores(skeleton)
-    score_only = {round(value, 1) for value in _fact_numbers(clause)} - {round(value, 1) for value in _fact_numbers(skeleton_before)}
-    kept = {round(value, 1) for value in _fact_numbers(after)}
-    for value in sorted(score_only & kept, reverse=True):
-        token = f"{value:.1f}"
-        before = re.sub(rf"(?:\s+at)?\s+{re.escape(token)}\b", "", before)
-    return f"{before.rstrip()} Scores:{after}"
+    return f"{cleaned} {source}".strip()
+
+
+_NUMBER_ONES = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+}
+_NUMBER_TENS = {
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+}
+
+
+def _spell_numbers(text: str) -> str:
+    """'ten' and 'two point seven' count as the same facts as 10 and 2.7."""
+    ones = "|".join(sorted(_NUMBER_ONES, key=len, reverse=True))
+    tens = "|".join(sorted(_NUMBER_TENS, key=len, reverse=True))
+
+    def tens_ones(match: re.Match[str]) -> str:
+        return str(_NUMBER_TENS[match.group(1).lower()] + _NUMBER_ONES[match.group(2).lower()])
+
+    spoken = re.sub(rf"\b({tens})[-\s]({ones})\b", tens_ones, text or "", flags=re.I)
+
+    def point(match: re.Match[str]) -> str:
+        left = match.group(1).lower()
+        right = match.group(2).lower()
+        if left in _NUMBER_ONES:
+            whole = _NUMBER_ONES[left]
+        elif left in _NUMBER_TENS:
+            whole = _NUMBER_TENS[left]
+        else:
+            whole = int(left)
+        fraction = _NUMBER_ONES[right] if right in _NUMBER_ONES else int(right)
+        return f"{whole}.{fraction}"
+
+    spoken = re.sub(rf"\b(\d+|{tens}|{ones})\s+point\s+(\d|{ones})\b", point, spoken, flags=re.I)
+
+    def word(match: re.Match[str]) -> str:
+        token = match.group(0).lower()
+        return str(_NUMBER_ONES[token] if token in _NUMBER_ONES else _NUMBER_TENS[token])
+
+    return re.sub(rf"\b(?:{tens}|{ones})\b", word, spoken, flags=re.I)
 
 
 def _fact_numbers(text: str) -> list[float]:
     found = []
-    for raw in re.findall(r"\d+(?:\.\d+)?", _normalize_degree(text or "")):
+    for raw in re.findall(r"\d+(?:\.\d+)?", _spell_numbers(_normalize_degree(text or ""))):
         value = float(raw)
         if value in {0, 1, 2, 3, 4, 5, 10, 32, 40, 95, 100, 365} or 2020 <= value <= 2027:
             continue
