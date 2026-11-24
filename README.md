@@ -11,7 +11,6 @@ Both run on Render's free plan. The first request after 15 idle minutes waits ab
 
 Design notes are in [DESIGN.md](DESIGN.md). The AI-assisted build is indexed in [AI_SESSION.md](AI_SESSION.md).
 
-About 5,200 lines of application code, plus about 3,500 lines of tests and evals, and about 1,400 lines of frontend. Counts skip blank lines.
 
 ## Features
 
